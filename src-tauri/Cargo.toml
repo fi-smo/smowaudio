@@ -1,0 +1,58 @@
+[package]
+name = "audiomanager"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight audio mixer with virtual mic processing"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+log = "0.4"
+rtrb = "0.3"
+parking_lot = "0.12"
+winreg = "0.55"
+ndarray = "0.16"
+# Official libDF vendored with a 5-line port to current tract + ndarray 0.16; see vendor/DeepFilterNet/VENDORED.md.
+deep_filter = { path = "../vendor/DeepFilterNet/libDF", default-features = false, features = ["tract", "default-model"] }
+
+# The #[interface] macro expands to `::windows_core` paths.
+windows-core = "0.62"
+
+[dependencies.windows]
+version = "0.62"
+features = [
+  "Win32_Foundation",
+  "Win32_Media_Audio",
+  "Win32_Media_KernelStreaming",
+  "Win32_Media_Multimedia",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Variant",
+  "Win32_System_Threading",
+  "Win32_System_Performance",
+  "Win32_System_WinRT",
+  "Win32_Devices_FunctionDiscovery",
+  "Win32_UI_Shell_PropertiesSystem",
+  "Win32_Security",
+]
+
+# Neural network inference is unusably slow unoptimized, even in dev builds.
+[profile.dev.package."*"]
+opt-level = 3
+
+# Our own DSP (resampler, EQ, limiter) runs every few milliseconds; keep it fast in dev builds too,
+# so a slow write can't push a virtual cable into its high-latency mode.
+[profile.dev]
+opt-level = 2
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

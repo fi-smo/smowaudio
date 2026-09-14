@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AudioManager</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo"></span>AudioManager</div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="mixer">Mixer</button>
+      <button class="tab" data-tab="mic">Microphone</button>
+      <button class="tab" data-tab="apps">Apps</button>
+      <button class="tab" data-tab="settings">Settings</button>
+    </nav>
+    <div class="status" id="status" title="Engine status"><span class="dot"></span><span id="status-text">Starting…</span></div>
+  </header>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <main>
+    <section id="tab-mixer" class="panel active"></section>
+    <section id="tab-mic" class="panel"></section>
+    <section id="tab-apps" class="panel"></section>
+    <section id="tab-settings" class="panel"></section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

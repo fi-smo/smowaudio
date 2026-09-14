@@ -1,0 +1,4 @@
+# Personal-PC build: use every instruction set this CPU supports (AVX2 on the Ryzen 9 5950X).
+# Remove this if the exe should ever run on a different machine.
+[build]
+rustflags = ["-C", "target-cpu=native"]
