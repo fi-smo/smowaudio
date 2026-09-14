@@ -237,6 +237,11 @@ select.input {
 .appcard.dragging { opacity: .45; }
 .appcard.locked { cursor: default; background: transparent; border-style: dashed; }
 .appcard .icon { grid-row: span 2; width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center; background: var(--panel); border: 1px solid var(--line); font-weight: 600; font-size: 13px; }
+/* Real app icons carry their own shape, so drop the letter tile around them. */
+.appcard .icon.has-img, .appicon.has-img { background: none; border-color: transparent; }
+.appicon.live.has-img { border-color: color-mix(in srgb, var(--c) 55%, var(--line)); }
+.appcard .icon img { width: 28px; height: 28px; display: block; object-fit: contain; -webkit-user-drag: none; }
+.appicon img { width: 18px; height: 18px; display: block; object-fit: contain; -webkit-user-drag: none; }
 .appcard .title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .appcard .sub { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--faint); font: 11px var(--font-num); }
 .appcard .sub em { font-style: normal; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

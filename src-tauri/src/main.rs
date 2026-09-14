@@ -4,6 +4,7 @@ mod audio;
 mod config;
 mod dsp;
 mod engine;
+mod icons;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -189,6 +190,12 @@ fn set_windows_defaults(state: State<AppState>, enabled: bool) -> CmdResult<()> 
 fn list_apps() -> CmdResult<Vec<AudioApp>> {
     let _com = audio::ComGuard::new();
     routing::list_apps().map_err(err)
+}
+
+/// The app's own icon as a PNG data URL, extracted off the UI thread and cached.
+#[tauri::command]
+async fn app_icon(path: String) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || icons::app_icon(&path)).await.ok().flatten()
 }
 
 /// Routes an app to a channel (or back to the Windows default with `None`) and remembers it.
@@ -427,6 +434,7 @@ fn main() {
             set_channel,
             set_devices,
             list_apps,
+            app_icon,
             assign_app,
             set_launch_at_login,
             set_windows_defaults,

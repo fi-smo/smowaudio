@@ -241,7 +241,7 @@ function eqEditor(eq, onChange) {
 function groupApps(list) {
   const byExe = new Map();
   for (const a of list) {
-    const g = byExe.get(a.exe) ?? { exe: a.exe, name: a.name, pids: [], active: false, peak: 0, assigned_device: null };
+    const g = byExe.get(a.exe) ?? { exe: a.exe, name: a.name, path: a.path, pids: [], active: false, peak: 0, assigned_device: null };
     g.pids.push(a.pid);
     g.active ||= a.active;
     g.peak = Math.max(g.peak, a.peak);
@@ -250,6 +250,30 @@ function groupApps(list) {
   }
   return [...byExe.values()].sort((x, y) => x.name.localeCompare(y.name));
 }
+// Exe path -> PNG data URL, null when the exe has no icon, undefined while it's being extracted.
+const iconCache = new Map();
+
+/** An app's own icon, or its first letter until (or unless) Windows gives us one. */
+function appIcon(app, className) {
+  const el = h("span", { class: className, "data-icon": app.path });
+  fillIcon(el, app);
+  if (app.path && !iconCache.has(app.path)) {
+    iconCache.set(app.path, undefined);
+    invoke("app_icon", { path: app.path })
+      .then((url) => {
+        iconCache.set(app.path, url || null);
+        document.querySelectorAll(`[data-icon="${CSS.escape(app.path)}"]`).forEach((e) => fillIcon(e, app));
+      })
+      .catch(() => iconCache.set(app.path, null));
+  }
+  return el;
+}
+function fillIcon(el, app) {
+  const url = iconCache.get(app.path);
+  el.classList.toggle("has-img", Boolean(url));
+  el.replaceChildren(url ? h("img", { src: url, alt: "" }) : app.name[0]?.toUpperCase() || "?");
+}
+
 /** Which channel an app plays on, and whether that was chosen or is just the Windows default. */
 function channelOf(app) {
   const rule = snap.config.app_rules[app.exe];
@@ -381,7 +405,11 @@ function updateStripIcons() {
     const holder = $(`[data-strip="ch${i}"] .appicons`);
     if (!holder || !snap.config.channels[i].source) return;
     const list = apps.filter((a) => channelOf(a).index === i);
-    const shown = list.slice(0, 5).map((a) => h("span", { class: "appicon" + (a.active ? " live" : ""), title: `${a.name}${a.active ? " (playing)" : ""}` }, a.name[0]?.toUpperCase() || "?"));
+    const shown = list.slice(0, 5).map((a) => {
+      const icon = appIcon(a, "appicon" + (a.active ? " live" : ""));
+      icon.title = `${a.name}${a.active ? " (playing)" : ""}`;
+      return icon;
+    });
     if (list.length > 5) shown.push(h("span", { class: "appnote" }, `+${list.length - 5}`));
     holder.replaceChildren(...(shown.length ? shown : [h("span", { class: "appnote" }, "No apps yet")]));
   });
@@ -461,7 +489,7 @@ function appCard(app) {
   if (!where.chosen) select.value = "";
   select.addEventListener("change", () => moveApp(app.exe, select.value === "" ? null : +select.value));
   const card = h("div", { class: "appcard", draggable: "true", "data-exe": app.exe },
-    h("span", { class: "icon" }, app.name[0]?.toUpperCase() || "?"),
+    appIcon(app, "icon"),
     h("span", { class: "title", title: app.name }, app.name),
     h("span", { class: "sub" }, h("em", {}, app.exe), where.chosen ? null : h("span", { class: "badge" }, "Default"),
       h("span", { class: "activity", title: app.active ? "Playing" : "Silent" }, h("i", { "data-activity": app.exe }))),
