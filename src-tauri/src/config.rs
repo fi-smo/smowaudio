@@ -48,6 +48,8 @@ pub struct Config {
     pub mic_sink: Option<String>,
     /// One entry per `CHANNEL_NAMES`, in order.
     pub channels: Vec<ChannelConfig>,
+    /// Master volume and mute for the final mix.
+    pub master: ChannelSettings,
     pub mic: MicSettings,
     /// Lower-case exe name -> channel index.
     pub app_rules: BTreeMap<String, usize>,
@@ -66,6 +68,7 @@ impl Default for Config {
             mic_device: None,
             mic_sink: None,
             channels: vec![ChannelConfig::default(); CHANNEL_COUNT],
+            master: ChannelSettings::default(),
             mic: MicSettings::default(),
             app_rules: BTreeMap::new(),
             launch_at_login: false,

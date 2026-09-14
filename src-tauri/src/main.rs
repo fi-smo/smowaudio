@@ -7,13 +7,15 @@ mod engine;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, RunEvent, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+};
 
 use audio::device::{self, DeviceInfo, Flow};
 use audio::routing::{self, AudioApp};
@@ -26,6 +28,10 @@ struct AppState {
     config: Mutex<Config>,
     engine: Mutex<Option<Engine>>,
     dirty: Arc<AtomicBool>,
+    /// Screen the main window should open on (set by the tray flyout before it exists).
+    pending_view: Mutex<Option<String>>,
+    /// When the flyout last hid itself on losing focus, so the same tray click doesn't reopen it.
+    flyout_hidden_at: Mutex<Option<Instant>>,
 }
 
 impl AppState {
@@ -75,7 +81,26 @@ fn get_state(state: State<AppState>) -> CmdResult<Snapshot> {
 
 #[tauri::command]
 fn get_meters(state: State<AppState>) -> Meters {
-    state.engine.lock().as_ref().map(|e| e.shared.meters.lock().clone()).unwrap_or_default()
+    state.engine.lock().as_ref().map(|e| e.meters()).unwrap_or_default()
+}
+
+#[tauri::command]
+fn set_master(state: State<AppState>, settings: ChannelSettings) {
+    state.update(|c| c.master = settings.clone());
+    if let Some(e) = state.engine.lock().as_ref() {
+        e.set_master(settings);
+    }
+}
+
+#[tauri::command]
+fn open_main_window(app: AppHandle, view: Option<String>) {
+    show_main(&app, view.as_deref());
+}
+
+/// The screen a freshly created main window should show, if the flyout asked for one.
+#[tauri::command]
+fn take_pending_view(state: State<AppState>) -> Option<String> {
+    state.pending_view.lock().take()
 }
 
 #[tauri::command]
@@ -247,18 +272,93 @@ fn another_instance_running() -> bool {
 }
 
 fn open_window(app: &AppHandle) {
+    show_main(app, None);
+}
+
+/// Shows the main window (creating it if needed), optionally on a given screen.
+fn show_main(app: &AppHandle, view: Option<&str>) {
+    if let Some(flyout) = app.get_webview_window("flyout") {
+        let _ = flyout.hide();
+    }
     if let Some(window) = app.get_webview_window("main") {
+        if let Some(view) = view {
+            let _ = window.emit("show-view", view);
+        }
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
         return;
     }
+    *app.state::<AppState>().pending_view.lock() = view.map(str::to_string);
     // Created on demand and destroyed on close, so WebView2 only uses memory while visible.
     let _ = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("AudioManager")
-        .inner_size(1000.0, 720.0)
-        .min_inner_size(420.0, 500.0)
+        .inner_size(1180.0, 760.0)
+        .min_inner_size(440.0, 520.0)
         .build();
+}
+
+const FLYOUT_SIZE: (f64, f64) = (360.0, 392.0);
+
+/// Shows or hides the quick-controls flyout next to the tray icon.
+fn toggle_flyout(app: &AppHandle, click: PhysicalPosition<f64>) {
+    let state = app.state::<AppState>();
+    // Clicking the tray icon while the flyout is open first takes focus from it, which hides it;
+    // don't reopen it on that same click.
+    if state.flyout_hidden_at.lock().is_some_and(|t| t.elapsed() < Duration::from_millis(350)) {
+        return;
+    }
+    let window = match app.get_webview_window("flyout") {
+        Some(window) if window.is_visible().unwrap_or(false) => {
+            let _ = window.hide();
+            return;
+        }
+        Some(window) => window,
+        None => {
+            let Ok(window) = WebviewWindowBuilder::new(app, "flyout", WebviewUrl::App("flyout.html".into()))
+                .title("AudioManager")
+                .inner_size(FLYOUT_SIZE.0, FLYOUT_SIZE.1)
+                .decorations(false)
+                .resizable(false)
+                .skip_taskbar(true)
+                .always_on_top(true)
+                .visible(false)
+                .build()
+            else {
+                return;
+            };
+            let handle = app.clone();
+            window.on_window_event(move |event| {
+                if let tauri::WindowEvent::Focused(false) = event {
+                    if let Some(flyout) = handle.get_webview_window("flyout") {
+                        let _ = flyout.hide();
+                    }
+                    *handle.state::<AppState>().flyout_hidden_at.lock() = Some(Instant::now());
+                }
+            });
+            window
+        }
+    };
+    place_flyout(&window, click);
+    let _ = window.show();
+    let _ = window.set_focus();
+    let _ = window.emit("flyout-shown", ());
+}
+
+/// Puts the flyout above the taskbar near the tray click, inside the screen's work area.
+fn place_flyout(window: &WebviewWindow, click: PhysicalPosition<f64>) {
+    let Ok(size) = window.outer_size() else { return };
+    let (width, height) = (size.width as f64, size.height as f64);
+    let margin = 12.0;
+    let mut position = PhysicalPosition::new(click.x - width / 2.0, click.y - height - margin);
+    if let Ok(Some(monitor)) = window.monitor_from_point(click.x, click.y) {
+        let area = monitor.work_area();
+        let (left, top) = (area.position.x as f64, area.position.y as f64);
+        let (right, bottom) = (left + area.size.width as f64, top + area.size.height as f64);
+        position.x = position.x.clamp(left + margin, (right - width - margin).max(left + margin));
+        position.y = (bottom - height - margin).max(top + margin);
+    }
+    let _ = window.set_position(position);
 }
 
 /// Appends a timestamped line to %APPDATA%\AudioManager\audiomanager.log. The release build has
@@ -307,7 +407,13 @@ fn main() {
     };
     let engine = (!duplicate).then(|| Engine::start(&config));
     let dirty = Arc::new(AtomicBool::new(false));
-    let state = AppState { config: Mutex::new(config), engine: Mutex::new(engine), dirty: dirty.clone() };
+    let state = AppState {
+        config: Mutex::new(config),
+        engine: Mutex::new(engine),
+        dirty: dirty.clone(),
+        pending_view: Mutex::new(None),
+        flyout_hidden_at: Mutex::new(None),
+    };
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| open_window(app)))
@@ -321,7 +427,10 @@ fn main() {
             list_apps,
             assign_app,
             set_launch_at_login,
-            set_windows_defaults
+            set_windows_defaults,
+            set_master,
+            open_main_window,
+            take_pending_view
         ])
         .setup(move |app| {
             let open = MenuItem::with_id(app, "open", "Open AudioManager", true, None::<&str>)?;
@@ -338,8 +447,11 @@ fn main() {
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-                        open_window(tray.app_handle());
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left, button_state: MouseButtonState::Up, position, ..
+                    } = event
+                    {
+                        toggle_flyout(tray.app_handle(), position);
                     }
                 })
                 .build(app)?;

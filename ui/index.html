@@ -7,26 +7,40 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand"><span class="logo"></span>AudioManager</div>
-    <nav class="tabs" role="tablist">
-      <button class="tab active" data-tab="mixer">Mixer</button>
-      <button class="tab" data-tab="mic">Microphone</button>
-      <button class="tab" data-tab="apps">Apps</button>
-      <button class="tab" data-tab="settings">Settings</button>
+  <div class="app">
+    <nav class="rail" aria-label="Sections">
+      <button type="button" data-view="mixer" aria-current="page">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4v16M12 4v16M18 4v16"/><rect x="3.5" y="13" width="5" height="3" rx="1"/><rect x="9.5" y="7" width="5" height="3" rx="1"/><rect x="15.5" y="10" width="5" height="3" rx="1"/></svg>
+        Mixer
+      </button>
+      <button type="button" data-view="apps">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/></svg>
+        Apps
+      </button>
+      <button type="button" data-view="mic">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/></svg>
+        Mic
+      </button>
+      <button type="button" class="foot" data-view="settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/></svg>
+        Settings
+      </button>
     </nav>
-    <div class="status" id="status" title="Engine status"><span class="dot"></span><span id="status-text">Starting…</span></div>
-  </header>
 
-  <div id="banner" class="banner" hidden></div>
-
-  <main>
-    <section id="tab-mixer" class="panel active"></section>
-    <section id="tab-mic" class="panel"></section>
-    <section id="tab-apps" class="panel"></section>
-    <section id="tab-settings" class="panel"></section>
-  </main>
-
+    <main class="content">
+      <header class="topbar">
+        <span class="brand"><span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>AudioManager</span>
+        <span class="spacer"></span>
+        <span class="pill">Output <b id="pill-output">…</b></span>
+        <span class="pill" id="pill-status"><span class="dot"></span><b id="pill-status-text">Starting</b></span>
+      </header>
+      <section class="view" id="view-mixer"></section>
+      <section class="view" id="view-apps" hidden></section>
+      <section class="view" id="view-mic" hidden></section>
+      <section class="view" id="view-settings" hidden></section>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status" hidden></div>
   <script src="app.js"></script>
 </body>
 </html>

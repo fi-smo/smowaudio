@@ -12,12 +12,14 @@ use std::ffi::c_void;
 
 use anyhow::Result;
 use serde::Serialize;
-use windows::core::{interface, IUnknown, IUnknown_Vtbl, Interface, HRESULT, HSTRING, PWSTR};
+use windows::core::{interface, w, IUnknown, IUnknown_Vtbl, Interface, HRESULT, HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Foundation::CloseHandle;
+use windows::Win32::Media::Audio::Endpoints::IAudioMeterInformation;
 use windows::Win32::Media::Audio::{
-    eConsole, eMultimedia, eRender, AudioSessionStateExpired, EDataFlow, ERole, IAudioSessionControl2,
-    IAudioSessionManager2, DEVICE_STATE_ACTIVE,
+    eConsole, eMultimedia, eRender, AudioSessionStateActive, AudioSessionStateExpired, EDataFlow, ERole,
+    IAudioSessionControl2, IAudioSessionManager2, DEVICE_STATE_ACTIVE,
 };
+use windows::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW};
 use windows::Win32::System::Com::CLSCTX_ALL;
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -96,9 +98,60 @@ pub struct AudioApp {
     pub pid: u32,
     /// Lower-case executable file name, used as the rule key.
     pub exe: String,
+    /// Product name from the exe's version info ("Google Chrome"), or the exe name.
+    pub name: String,
     pub path: String,
     /// Device the app is persisted to, if it isn't following the Windows default.
     pub assigned_device: Option<String>,
+    /// Whether any of its sessions is currently playing.
+    pub active: bool,
+    /// Current peak level across its sessions, 0..1.
+    pub peak: f32,
+}
+
+/// Product name from an exe's version resource, falling back to its file name. Cached because the
+/// Apps view refreshes every second.
+fn display_name(path: &str, exe: &str) -> String {
+    static CACHE: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<String, String>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(name) = cache.lock().get(path) {
+        return name.clone();
+    }
+    let name = file_description(path).filter(|d| !d.is_empty()).unwrap_or_else(|| {
+        let stem = exe.strip_suffix(".exe").unwrap_or(exe);
+        let mut chars = stem.chars();
+        chars.next().map(|first| first.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
+    });
+    cache.lock().insert(path.to_string(), name.clone());
+    name
+}
+
+fn file_description(path: &str) -> Option<String> {
+    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        let size = GetFileVersionInfoSizeW(PCWSTR(wide.as_ptr()), None);
+        if size == 0 {
+            return None;
+        }
+        let mut data = vec![0u8; size as usize];
+        GetFileVersionInfoW(PCWSTR(wide.as_ptr()), None, size, data.as_mut_ptr().cast()).ok()?;
+        let mut ptr: *mut c_void = std::ptr::null_mut();
+        let mut len = 0u32;
+        if !VerQueryValueW(data.as_ptr().cast(), w!("\\VarFileInfo\\Translation"), &mut ptr, &mut len).as_bool() || len < 4 {
+            return None;
+        }
+        let (lang, codepage) = (*(ptr as *const u16), *(ptr as *const u16).add(1));
+        let key: Vec<u16> = format!("\\StringFileInfo\\{lang:04x}{codepage:04x}\\FileDescription")
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        if !VerQueryValueW(data.as_ptr().cast(), PCWSTR(key.as_ptr()), &mut ptr, &mut len).as_bool() || len == 0 {
+            return None;
+        }
+        let text = std::slice::from_raw_parts(ptr as *const u16, len as usize);
+        Some(String::from_utf16_lossy(text).trim_end_matches('\0').trim().to_string())
+    }
 }
 
 fn process_path(pid: u32) -> Option<String> {
@@ -129,13 +182,28 @@ pub fn list_apps() -> Result<Vec<AudioApp>> {
             let Ok(control) = (unsafe { sessions.GetSession(j) }) else { continue };
             let Ok(control) = control.cast::<IAudioSessionControl2>() else { continue };
             let pid = unsafe { control.GetProcessId() }.unwrap_or(0);
-            let expired = unsafe { control.GetState() }.map_or(true, |s| s == AudioSessionStateExpired);
-            if pid == 0 || pid == own_pid || expired || apps.contains_key(&pid) {
+            let state = unsafe { control.GetState() };
+            let expired = state.as_ref().map_or(true, |s| *s == AudioSessionStateExpired);
+            if pid == 0 || pid == own_pid || expired {
+                continue;
+            }
+            let active = matches!(state, Ok(s) if s == AudioSessionStateActive);
+            let peak = control
+                .cast::<IAudioMeterInformation>()
+                .ok()
+                .and_then(|meter| unsafe { meter.GetPeakValue() }.ok())
+                .unwrap_or(0.0);
+            if let Some(app) = apps.get_mut(&pid) {
+                app.active |= active;
+                app.peak = app.peak.max(peak);
                 continue;
             }
             let Some(path) = process_path(pid) else { continue };
             let exe = path.rsplit('\\').next().unwrap_or(&path).to_lowercase();
-            apps.insert(pid, AudioApp { pid, exe, assigned_device: get_app_output(pid), path });
+            apps.insert(
+                pid,
+                AudioApp { pid, name: display_name(&path, &exe), exe, assigned_device: get_app_output(pid), path, active, peak },
+            );
         }
     }
     Ok(apps.into_values().collect())
@@ -159,7 +227,10 @@ mod tests {
         }
         let _ = factory().expect("AudioPolicyConfig factory activates");
         for app in list_apps().expect("list audio apps") {
-            println!("app: {} pid={} assigned={:?}", app.exe, app.pid, app.assigned_device);
+            println!(
+                "app: {} \"{}\" pid={} playing={} peak={:.3} assigned={:?}",
+                app.exe, app.name, app.pid, app.active, app.peak, app.assigned_device
+            );
         }
     }
 

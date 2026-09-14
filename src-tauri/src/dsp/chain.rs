@@ -13,12 +13,14 @@ use super::{db_to_lin, lin_to_db};
 #[serde(default)]
 pub struct EqSettings {
     pub enabled: bool,
+    /// Preset the bands came from ("Custom" once edited by hand). Shown in the UI only.
+    pub preset: String,
     pub bands: Vec<EqBand>,
 }
 
 impl Default for EqSettings {
     fn default() -> Self {
-        Self { enabled: false, bands: default_bands() }
+        Self { enabled: false, preset: "Flat".into(), bands: default_bands() }
     }
 }
 
@@ -59,6 +61,10 @@ pub struct MicMeters {
     pub denoise_ready: bool,
     /// Delay added by the noise removal model, 0 when not loaded.
     pub denoise_latency_ms: f32,
+    /// How much noise removal is taking out right now, in dB (smoothed).
+    pub noise_reduction_db: f32,
+    /// Mic limiter gain reduction (dB, <= 0).
+    pub limiter_db: f32,
 }
 
 /// Noise removal -> gate -> EQ -> compressor -> output gain.
@@ -123,8 +129,14 @@ impl MicChain {
     pub fn process(&mut self, frame: &mut [f32; FRAME]) {
         self.meters.input_db = peak_db(frame);
 
-        if let Some(d) = self.denoiser.as_mut() {
-            d.process(frame);
+        let before = rms_db(frame);
+        match self.denoiser.as_mut() {
+            Some(d) if self.settings.denoise.enabled => {
+                d.process(frame);
+                let removed = (before - rms_db(frame)).max(0.0);
+                self.meters.noise_reduction_db += (removed - self.meters.noise_reduction_db) * 0.2;
+            }
+            _ => self.meters.noise_reduction_db = 0.0,
         }
         self.gate.process(frame);
         if self.settings.eq.enabled {
@@ -139,6 +151,7 @@ impl MicChain {
         self.limiter.process(frame, 1);
 
         self.meters.output_db = peak_db(frame);
+        self.meters.limiter_db = self.limiter.gain_reduction_db();
         self.meters.gain_reduction_db = self.compressor.gain_reduction_db();
         self.meters.gate_open = !self.settings.gate.enabled || self.gate.is_open();
     }
@@ -163,12 +176,13 @@ pub struct ChannelChain {
     settings: ChannelSettings,
     eq: Equalizer,
     current_gain: f32,
-    pub peak_db: f32,
+    /// Left and right peak of the last block, in dBFS.
+    pub peak_db: [f32; 2],
 }
 
 impl ChannelChain {
     pub fn new(settings: ChannelSettings) -> Self {
-        Self { eq: Equalizer::new(&settings.eq.bands), current_gain: 0.0, peak_db: -120.0, settings }
+        Self { eq: Equalizer::new(&settings.eq.bands), current_gain: 0.0, peak_db: [-120.0; 2], settings }
     }
 
     pub fn set(&mut self, settings: ChannelSettings) {
@@ -190,10 +204,24 @@ impl ChannelChain {
             *s *= self.current_gain;
         }
         self.current_gain = target;
-        self.peak_db = peak_db(buf);
+        self.peak_db = stereo_peak_db(buf);
     }
 }
 
 fn peak_db(buf: &[f32]) -> f32 {
     lin_to_db(buf.iter().fold(0f32, |m, s| m.max(s.abs())))
+}
+
+fn rms_db(buf: &[f32]) -> f32 {
+    lin_to_db((buf.iter().map(|s| s * s).sum::<f32>() / buf.len().max(1) as f32).sqrt())
+}
+
+/// Left and right peak of interleaved stereo, in dBFS.
+pub fn stereo_peak_db(buf: &[f32]) -> [f32; 2] {
+    let (mut left, mut right) = (0f32, 0f32);
+    for frame in buf.chunks_exact(2) {
+        left = left.max(frame[0].abs());
+        right = right.max(frame[1].abs());
+    }
+    [lin_to_db(left), lin_to_db(right)]
 }

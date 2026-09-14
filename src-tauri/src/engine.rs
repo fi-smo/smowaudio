@@ -19,18 +19,21 @@ use serde::Serialize;
 use crate::audio::device::{self, Flow};
 use crate::audio::{resample, routing, stream, disable_denormals, ComGuard};
 use crate::config::{Config, CHANNEL_COUNT, CHANNEL_NAMES};
-use crate::dsp::chain::{ChannelChain, ChannelSettings, MicChain, MicMeters, MicSettings};
+use crate::dsp::chain::{stereo_peak_db, ChannelChain, ChannelSettings, MicChain, MicMeters, MicSettings};
 use crate::dsp::denoise::{Denoiser, FRAME};
 use crate::dsp::limiter::Limiter;
-use crate::dsp::lin_to_db;
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Meters {
     pub mic: MicMeters,
-    pub channels: [f32; CHANNEL_COUNT],
-    pub master: f32,
+    /// Peak per channel after its volume and EQ, left and right, in dBFS.
+    pub channels: [[f32; 2]; CHANNEL_COUNT],
+    /// Final mix after the master volume and limiter, left and right.
+    pub master: [f32; 2],
     /// How much the output limiter is currently turning peaks down (dB, <= 0).
     pub master_reduction_db: f32,
+    /// Largest channel buffer right now, in ms (part of the playback delay).
+    pub buffer_ms: f32,
 }
 
 /// Settings slot the audio thread polls cheaply: it only locks when the version changed.
@@ -64,6 +67,7 @@ impl<T: Clone> Slot<T> {
 pub struct Shared {
     mic: Slot<MicSettings>,
     channels: [Slot<ChannelSettings>; CHANNEL_COUNT],
+    master: Slot<ChannelSettings>,
     rules: Mutex<BTreeMap<String, String>>,
     bridges: Mutex<Vec<(String, Arc<resample::BridgeStats>)>>,
     /// Latest step each stream thread reported, for the stall watchdog.
@@ -90,6 +94,7 @@ impl Engine {
             channels: std::array::from_fn(|i| {
                 Slot::new(config.channels.get(i).map(|c| c.settings.clone()).unwrap_or_default())
             }),
+            master: Slot::new(config.master.clone()),
             rules: Mutex::new(config.routing_rules()),
             bridges: Mutex::new(Vec::new()),
             phases: Mutex::new(HashMap::new()),
@@ -129,8 +134,26 @@ impl Engine {
         }
     }
 
+    pub fn set_master(&self, settings: ChannelSettings) {
+        self.shared.master.set(settings);
+    }
+
     pub fn set_rules(&self, rules: BTreeMap<String, String>) {
         *self.shared.rules.lock() = rules;
+    }
+
+    /// Current meters plus the largest channel buffer (a readout of playback delay).
+    pub fn meters(&self) -> Meters {
+        let mut meters = self.shared.meters.lock().clone();
+        meters.buffer_ms = self
+            .shared
+            .bridges
+            .lock()
+            .iter()
+            .filter(|(name, _)| CHANNEL_NAMES.contains(&name.as_str()))
+            .map(|(_, stats)| stats.target_frames.load(Ordering::Relaxed) as f32 / 48.0)
+            .fold(0.0, f32::max);
+        meters
     }
 
     /// Runs `body` on a named thread, retrying every second until the engine stops.
@@ -245,6 +268,8 @@ impl Engine {
         let mut seen = [u64::MAX; CHANNEL_COUNT];
         let mut scratch = vec![0f32; 48_000];
         let mut limiter = Limiter::new(-1.0, 80.0);
+        let mut master_chain = ChannelChain::new(config.master.clone());
+        let mut master_seen = u64::MAX;
         let mut monitor_mono = vec![0f32; 24_000];
         let mut last_output = String::new();
         self.supervise("Output", move |stop| {
@@ -261,7 +286,7 @@ impl Engine {
                 if scratch.len() < out.len() {
                     scratch.resize(out.len(), 0.0);
                 }
-                let mut peaks = [-120f32; CHANNEL_COUNT];
+                let mut peaks = [[-120f32; 2]; CHANNEL_COUNT];
                 for (i, reader) in readers.iter_mut().enumerate() {
                     let Some(reader) = reader else { continue };
                     if let Some(s) = shared.channels[i].poll(&mut seen[i]) {
@@ -284,11 +309,14 @@ impl Engine {
                         pair[1] += s;
                     }
                 }
+                if let Some(s) = shared.master.poll(&mut master_seen) {
+                    master_chain.set(s);
+                }
+                master_chain.process(out);
                 limiter.process(out, 2);
-                let master = out.iter().fold(0f32, |m, s| m.max(s.abs()));
                 if let Some(mut m) = shared.meters.try_lock() {
                     m.channels = peaks;
-                    m.master = lin_to_db(master);
+                    m.master = stereo_peak_db(out);
                     m.master_reduction_db = limiter.gain_reduction_db();
                 }
             })

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AudioManager</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="flyout-body">
+  <div class="flyout">
+    <div class="fly-head">
+      <span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+      <b>AudioManager</b>
+      <span class="spacer"></span>
+      <span class="dot" id="fly-status" title="All streams running"></span>
+    </div>
+    <div class="fly-dev"><span>Output</span><b id="fly-output">…</b></div>
+    <div class="fly-rows" id="fly-rows"></div>
+    <div class="fly-mic">
+      <span class="tape" style="--c: var(--mic); font-size: 13px; padding: 0 6px">Mic</span>
+      <button type="button" class="btn mute" id="fly-mute" aria-pressed="false">Mute</button>
+      <label class="switch" style="--c: var(--mic)"><input type="checkbox" id="fly-listen"><span class="track"></span>Listen</label>
+    </div>
+    <div class="fly-foot">
+      <button type="button" class="btn primary" data-open="mixer">Open mixer</button>
+      <button type="button" class="btn" data-open="settings">Settings</button>
+    </div>
+  </div>
+  <script src="flyout.js"></script>
+</body>
+</html>
