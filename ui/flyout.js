@@ -93,6 +93,15 @@ async function pollMeters() {
   setTimeout(pollMeters, 60);
 }
 
+// Keep the window exactly as tall as its content (+2 for the body's border).
+let fittedHeight = 0;
+new ResizeObserver(() => {
+  const height = Math.ceil($(".flyout").getBoundingClientRect().height) + 2;
+  if (height === fittedHeight) return;
+  fittedHeight = height;
+  invoke("fit_flyout", { height }).catch(() => {});
+}).observe($(".flyout"));
+
 // Volumes may have changed in the main window since the flyout was last open.
 listen("flyout-shown", () => load().catch(() => {}));
 window.addEventListener("focus", () => load().catch(() => {}));

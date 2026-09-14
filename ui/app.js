@@ -491,8 +491,8 @@ function appCard(app) {
   const card = h("div", { class: "appcard", draggable: "true", "data-exe": app.exe },
     appIcon(app, "icon"),
     h("span", { class: "title", title: app.name }, app.name),
-    h("span", { class: "sub" }, h("em", {}, app.exe), where.chosen ? null : h("span", { class: "badge" }, "Default"),
-      h("span", { class: "activity", title: app.active ? "Playing" : "Silent" }, h("i", { "data-activity": app.exe }))),
+    h("span", { class: "activity", title: app.active ? "Playing" : "Silent" }, h("i", { "data-activity": app.exe })),
+    h("span", { class: "sub" }, h("em", {}, app.exe), where.chosen ? null : h("span", { class: "badge" }, "Default")),
     select);
   card.addEventListener("dragstart", (e) => { dragExe = app.exe; e.dataTransfer.setData("text/plain", app.exe); card.classList.add("dragging"); });
   card.addEventListener("dragend", () => { dragExe = null; card.classList.remove("dragging"); });

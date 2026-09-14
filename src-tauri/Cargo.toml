@@ -8,7 +8,7 @@ description = "Lightweight audio mixer with virtual mic processing"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -49,11 +49,16 @@ features = [
 # Neural network inference is unusably slow unoptimized, even in dev builds.
 [profile.dev.package."*"]
 opt-level = 3
+debug = false
 
 # Our own DSP (resampler, EQ, limiter) runs every few milliseconds; keep it fast in dev builds too,
 # so a slow write can't push a virtual cable into its high-latency mode.
+# Full debug info plus incremental caches grew target\debug past 20 GB; line tables are enough
+# for panic backtraces.
 [profile.dev]
 opt-level = 2
+debug = "line-tables-only"
+incremental = false
 
 [profile.release]
 opt-level = 3

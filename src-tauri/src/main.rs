@@ -15,7 +15,7 @@ use serde::Serialize;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, RunEvent, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, RunEvent, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
 use audio::device::{self, DeviceInfo, Flow};
@@ -307,7 +307,24 @@ fn show_main(app: &AppHandle, view: Option<&str>) {
         .build();
 }
 
-const FLYOUT_SIZE: (f64, f64) = (360.0, 392.0);
+/// Starting size; the flyout page reports its real content height through `fit_flyout`.
+const FLYOUT_SIZE: (f64, f64) = (360.0, 330.0);
+
+/// Sizes the flyout to its content (a CSS height), keeping its bottom edge above the taskbar.
+#[tauri::command]
+fn fit_flyout(window: WebviewWindow, height: f64) {
+    let (Ok(scale), Ok(position), Ok(size)) = (window.scale_factor(), window.outer_position(), window.outer_size())
+    else {
+        return;
+    };
+    let new_height = (height * scale).round().max(1.0) as u32;
+    if new_height == size.height {
+        return;
+    }
+    let bottom = position.y + size.height as i32;
+    let _ = window.set_size(PhysicalSize::new(size.width, new_height));
+    let _ = window.set_position(PhysicalPosition::new(position.x, bottom - new_height as i32));
+}
 
 /// Shows or hides the quick-controls flyout next to the tray icon.
 fn toggle_flyout(app: &AppHandle, click: PhysicalPosition<f64>) {
@@ -339,10 +356,18 @@ fn toggle_flyout(app: &AppHandle, click: PhysicalPosition<f64>) {
             let handle = app.clone();
             window.on_window_event(move |event| {
                 if let tauri::WindowEvent::Focused(false) = event {
-                    if let Some(flyout) = handle.get_webview_window("flyout") {
+                    // Showing the window reports a spurious focus loss while focus moves into the
+                    // WebView, so only hide once the window has really stayed unfocused.
+                    let handle = handle.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(150));
+                        let Some(flyout) = handle.get_webview_window("flyout") else { return };
+                        if flyout.is_focused().unwrap_or(false) || !flyout.is_visible().unwrap_or(false) {
+                            return;
+                        }
                         let _ = flyout.hide();
-                    }
-                    *handle.state::<AppState>().flyout_hidden_at.lock() = Some(Instant::now());
+                        *handle.state::<AppState>().flyout_hidden_at.lock() = Some(Instant::now());
+                    });
                 }
             });
             window
@@ -440,6 +465,7 @@ fn main() {
             set_windows_defaults,
             set_master,
             open_main_window,
+            fit_flyout,
             take_pending_view
         ])
         .setup(move |app| {
@@ -447,7 +473,8 @@ fn main() {
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &quit])?;
             TrayIconBuilder::with_id("tray")
-                .icon(app.default_window_icon().cloned().expect("app icon"))
+                // Bars without the app icon's tile, so they read at tray size on light and dark taskbars.
+                .icon(tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?)
                 .tooltip("AudioManager")
                 .menu(&menu)
                 .show_menu_on_left_click(false)

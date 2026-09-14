@@ -230,7 +230,7 @@ select.input {
 .lane-head small { color: var(--faint); font: 12px var(--font-num); }
 .lane .empty { color: var(--faint); font-size: 12px; padding: 6px 2px; }
 .appcard {
-  display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 4px 10px; align-items: center;
+  display: grid; grid-template-columns: 30px minmax(0, 1fr) 5px; gap: 4px 10px; align-items: center;
   border: 1px solid var(--line); background: var(--raised); border-radius: 7px; padding: 8px; cursor: grab;
 }
 .appcard:active { cursor: grabbing; }
@@ -245,8 +245,9 @@ select.input {
 .appcard .title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .appcard .sub { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--faint); font: 11px var(--font-num); }
 .appcard .sub em { font-style: normal; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.activity { height: 4px; width: 42px; flex: none; border-radius: 2px; background: var(--well); overflow: hidden; margin-left: auto; }
-.activity i { display: block; height: 100%; width: var(--a, 0%); background: var(--c); }
+/* Vertical level meter down the card's right edge, filling from the bottom. */
+.activity { grid-column: 3; grid-row: 1 / span 3; align-self: stretch; width: 5px; border-radius: 2px; background: var(--well); overflow: hidden; position: relative; }
+.activity i { position: absolute; left: 0; right: 0; bottom: 0; height: var(--a, 0%); background: var(--c); }
 .appcard select { grid-column: 2; justify-self: start; margin-top: 2px; border: 1px solid var(--line); background: var(--panel); border-radius: 5px; padding: 1px 4px; font-size: 11px; color: var(--muted); }
 .badge { font: 600 10px/1 var(--font-ui); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 3px 5px; }
 
@@ -311,19 +312,23 @@ select.input {
 .toast.error { background: var(--hot); color: #fff; }
 
 /* ---------- tray flyout ---------- */
+/* The window is sized to .flyout's height (see fit_flyout), so .flyout must not stretch to the window. */
 body.flyout-body { background: var(--window); border: 1px solid var(--line-strong); }
-.flyout { padding: 12px 14px; display: grid; gap: 10px; height: 100%; align-content: start; }
-.fly-head { display: flex; align-items: center; gap: 8px; }
+.flyout { padding: 14px; display: grid; gap: 12px; align-content: start; }
+.fly-head { display: flex; align-items: center; gap: 8px; line-height: 20px; }
 .fly-dev { display: flex; align-items: center; justify-content: space-between; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px; font-size: 13px; min-width: 0; }
 .fly-dev span { color: var(--muted); flex: none; }
 .fly-dev b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fly-rows { display: grid; gap: 10px; }
 .fly-row { --c: var(--game); display: grid; grid-template-columns: 58px minmax(0, 1fr) 44px; gap: 2px 10px; align-items: center; }
-.fly-row .tape { font-size: 13px; padding: 0 6px; justify-self: start; }
+.fly-row .tape, .fly-mic .tape { font-size: 13px; padding: 0 6px; justify-self: start; }
+.fly-row input[type="range"] { margin: 0; width: 100%; accent-color: var(--c); }
 .fly-row output { font: 12px var(--font-num); text-align: right; font-variant-numeric: tabular-nums; }
 .fly-row .thin { grid-column: 2; height: 3px; border-radius: 2px; background: var(--well); overflow: hidden; }
 .fly-row .thin i { display: block; height: 100%; width: var(--a, 0%); background: var(--c); }
-.fly-mic { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding-top: 8px; border-top: 1px solid var(--line); }
+/* Same first column as the channel rows, so the Mic tape lines up with the ones above it. */
+.fly-mic { --c: var(--mic); display: grid; grid-template-columns: 58px auto 1fr; gap: 10px; align-items: center; padding-top: 12px; border-top: 1px solid var(--line); }
+.fly-mic .switch { justify-self: end; }
 .fly-foot { display: flex; gap: 8px; }
 .fly-foot .primary { flex: 1; }
 
