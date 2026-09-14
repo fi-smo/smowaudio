@@ -255,6 +255,9 @@ function renderMic() {
 
   const levels = card("Levels", { wide: true },
     h("div", { class: "meter-label" }, h("span", {}, "Input"), h("span", { id: "mic-in-db" }, "")), meter("mic_in"),
+    h("div", { class: "row" }, h("span", { class: "grow" }, "Listen to my mic"),
+      toggle(m.monitor, (v) => { m.monitor = v; push(); })),
+    h("p", { class: "hint" }, "Plays your processed mic in your headphones so you can check how you sound. It adds a little delay, so it can feel slightly echoey."),
     h("div", { class: "meter-label" }, h("span", {}, "Virtual Mic output"), h("span", { id: "mic-out-db" }, "")), meter("mic_out"),
     h("div", { class: "row" },
       h("div", { class: "grow" }, slider({ label: "Output gain", min: -20, max: 20, step: 0.5, value: m.gain_db, unit: " dB",
@@ -368,7 +371,9 @@ function renderSettings() {
   const general = card("General", {},
     h("div", { class: "row" }, h("span", { class: "grow" }, "Launch at Windows sign-in (starts in tray)"),
       toggle(cfg.launch_at_login, (v) => invoke("set_launch_at_login", { enabled: v }).catch(showError))),
-    h("p", { class: "hint" }, "Tip: set the Game channel's cable (e.g. \"CABLE-D Input\") as the Windows default output device, like Sonar's Gaming device, so games, system sounds and anything unassigned go through AudioManager."));
+    h("div", { class: "row" }, h("span", { class: "grow" }, "Set Windows default devices (like Sonar)"),
+      toggle(cfg.set_windows_defaults, (v) => invoke("set_windows_defaults", { enabled: v }).catch(showError))),
+    h("p", { class: "hint" }, "Game becomes the default playback device, Chat the default communications device, and the Virtual Mic the default recording device. Turning this off restores the defaults you had before."));
 
   const status = card("Engine status", {},
     h("div", { class: "status-list" }, ...Object.entries(snapshot.status).sort().flatMap(([k, v]) =>

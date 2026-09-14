@@ -1,7 +1,9 @@
 //! Windows audio plumbing: device discovery, WASAPI streams, clock drift handling
 //! and per-app routing.
 
+pub mod defaults;
 pub mod device;
+pub mod notify;
 pub mod resample;
 pub mod routing;
 pub mod stream;

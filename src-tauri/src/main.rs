@@ -17,6 +17,7 @@ use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilde
 
 use audio::device::{self, DeviceInfo, Flow};
 use audio::routing::{self, AudioApp};
+use audio::defaults::WindowsDefaults;
 use config::{cable_partner, Config};
 use dsp::chain::{ChannelSettings, MicSettings};
 use engine::{Engine, Meters};
@@ -116,7 +117,47 @@ fn set_devices(
             channel.sink = sinks.get(i).cloned().flatten();
         }
     });
+    {
+        let mut config = state.config.lock();
+        if config.set_windows_defaults {
+            apply_windows_defaults(&mut config);
+        }
+    }
     state.restart_engine();
+}
+
+/// Sonar-style Windows defaults. Remembers the user's own defaults the first time, then points
+/// Windows at the Game, Chat and Virtual Mic cables. Returns true if the config changed.
+fn apply_windows_defaults(config: &mut Config) -> bool {
+    let targets = config.windows_default_targets();
+    let mut config_changed = false;
+    if config.previous_defaults.is_none() {
+        config.previous_defaults = Some(WindowsDefaults::read());
+        config_changed = true;
+    }
+    match targets.apply() {
+        Ok(0) => {}
+        Ok(n) => append_log(&format!("set {n} Windows default device(s): {targets:?}")),
+        Err(e) => append_log(&format!("setting Windows default devices failed: {e:#}")),
+    }
+    config_changed
+}
+
+#[tauri::command]
+fn set_windows_defaults(state: State<AppState>, enabled: bool) -> CmdResult<()> {
+    let _com = audio::ComGuard::new();
+    {
+        let mut config = state.config.lock();
+        config.set_windows_defaults = enabled;
+        if enabled {
+            apply_windows_defaults(&mut config);
+        } else if let Some(previous) = config.previous_defaults.take() {
+            previous.apply().map_err(err)?;
+            append_log("restored the Windows default devices from before AudioManager");
+        }
+    }
+    state.dirty.store(true, Ordering::Relaxed);
+    Ok(())
 }
 
 #[tauri::command]
@@ -255,9 +296,12 @@ fn main() {
     // Audio first: the engine is running before Tauri even initializes.
     let config = {
         let _com = audio::ComGuard::new();
-        let config = Config::load();
+        let mut config = Config::load();
         if !duplicate {
             append_log(&format!("started pid {} with {}", std::process::id(), config.describe()));
+            if config.set_windows_defaults && apply_windows_defaults(&mut config) {
+                let _ = config.save();
+            }
         }
         config
     };
@@ -276,7 +320,8 @@ fn main() {
             set_devices,
             list_apps,
             assign_app,
-            set_launch_at_login
+            set_launch_at_login,
+            set_windows_defaults
         ])
         .setup(move |app| {
             let open = MenuItem::with_id(app, "open", "Open AudioManager", true, None::<&str>)?;
@@ -298,6 +343,29 @@ fn main() {
                     }
                 })
                 .build(app)?;
+
+            // Restart streams when the devices they depend on change (headset plugged in, mic
+            // turned on, Windows default changed while following it).
+            let watcher_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let _com = audio::ComGuard::new();
+                let mut last = watcher_handle.state::<AppState>().config.lock().device_fingerprint();
+                let result = audio::notify::watch(
+                    || true,
+                    || {
+                        let state = watcher_handle.state::<AppState>();
+                        let now = state.config.lock().device_fingerprint();
+                        if now != last {
+                            append_log(&format!("audio devices changed ({now}); restarting streams"));
+                            state.restart_engine();
+                            last = now;
+                        }
+                    },
+                );
+                if let Err(e) = result {
+                    append_log(&format!("device change notifications unavailable: {e:#}"));
+                }
+            });
 
             let handle = app.handle().clone();
             std::thread::spawn(move || loop {

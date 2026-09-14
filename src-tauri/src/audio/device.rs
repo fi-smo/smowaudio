@@ -105,18 +105,16 @@ pub fn by_id(id: &str) -> Result<IMMDevice> {
     unsafe { enumerator()?.GetDevice(PCWSTR(wide.as_ptr())) }.with_context(|| format!("device {id} not found"))
 }
 
-/// The device to use for a physical role: the configured one, else the Windows default,
-/// never a virtual device (a cable would feed back into itself; another mixer's device may be dead).
-pub fn resolve_physical(flow: Flow, configured: Option<&str>) -> Result<IMMDevice> {
-    if let Some(id) = configured {
-        if let Ok(device) = by_id(id) {
-            return Ok(device);
-        }
-    }
+/// The device to use for a physical role, in order: the user's explicit choice if it's connected;
+/// `preferred` (their own Windows default from before AudioManager made the cables default) if
+/// it's connected and physical; the current Windows default if physical; any physical device.
+/// Never a virtual device: a cable would feed back into itself, another mixer's device may be dead.
+pub fn resolve_physical(flow: Flow, configured: Option<&str>, preferred: Option<&str>) -> Result<IMMDevice> {
     let devices = list(flow)?;
-    let pick = devices
-        .iter()
-        .find(|d| d.is_default && !d.is_virtual())
+    let active = |id: Option<&str>| id.and_then(|id| devices.iter().find(|d| d.id == id));
+    let pick = active(configured)
+        .or_else(|| active(preferred).filter(|d| !d.is_virtual()))
+        .or_else(|| devices.iter().find(|d| d.is_default && !d.is_virtual()))
         .or_else(|| devices.iter().find(|d| !d.is_virtual()))
         .context("no physical audio device available")?;
     by_id(&pick.id)

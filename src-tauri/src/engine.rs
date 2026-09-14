@@ -71,6 +71,8 @@ pub struct Shared {
     /// Times an output device ran out of queued audio (audible gaps).
     output_starved: AtomicU64,
     mic_starved: AtomicU64,
+    /// "Listen to my mic": mix the processed mic into the headphone output.
+    monitor: AtomicBool,
     pub meters: Mutex<Meters>,
     pub status: Mutex<HashMap<String, String>>,
 }
@@ -93,13 +95,18 @@ impl Engine {
             phases: Mutex::new(HashMap::new()),
             output_starved: AtomicU64::new(0),
             mic_starved: AtomicU64::new(0),
+            monitor: AtomicBool::new(config.mic.monitor),
             meters: Mutex::new(Meters::default()),
             status: Mutex::new(HashMap::new()),
         });
         let stop = Arc::new(AtomicBool::new(false));
         let mut engine = Engine { shared, stop, threads: Vec::new() };
-        engine.spawn_output(config);
-        engine.spawn_mic(config);
+        // Processed mic -> headphone output, used while "listen to my mic" is on.
+        let (monitor_tx, monitor_rx) = resample::bridge(1, 10.0);
+        let monitor_stats = monitor_rx.stats.clone();
+        engine.shared.bridges.lock().push(("Mic monitor".to_string(), monitor_stats.clone()));
+        engine.spawn_output(config, monitor_rx);
+        engine.spawn_mic(config, monitor_tx, monitor_stats);
         engine.spawn_router();
         engine
     }
@@ -112,6 +119,7 @@ impl Engine {
     }
 
     pub fn set_mic(&self, settings: MicSettings) {
+        self.shared.monitor.store(settings.monitor, Ordering::Relaxed);
         self.shared.mic.set(settings);
     }
 
@@ -190,7 +198,7 @@ impl Engine {
         self.threads.push(handle);
     }
 
-    fn spawn_output(&mut self, config: &Config) {
+    fn spawn_output(&mut self, config: &Config, mut monitor: resample::DriftReader) {
         let mut readers: Vec<Option<resample::DriftReader>> = Vec::new();
         for (i, channel) in config.channels.iter().enumerate() {
             let Some(source) = channel.source.clone() else {
@@ -232,14 +240,16 @@ impl Engine {
 
         let shared = self.shared.clone();
         let output_id = config.output_device.clone();
+        let preferred_output = config.previous_default(Flow::Render);
         let mut chains: Vec<ChannelChain> = config.channels.iter().map(|c| ChannelChain::new(c.settings.clone())).collect();
         let mut seen = [u64::MAX; CHANNEL_COUNT];
         let mut scratch = vec![0f32; 48_000];
         let mut limiter = Limiter::new(-1.0, 80.0);
+        let mut monitor_mono = vec![0f32; 24_000];
         let mut last_output = String::new();
         self.supervise("Output", move |stop| {
             stream::phase("find device");
-            let device = device::resolve_physical(Flow::Render, output_id.as_deref())?;
+            let device = device::resolve_physical(Flow::Render, output_id.as_deref(), preferred_output.as_deref())?;
             let device_name = device::friendly_name(&device).unwrap_or_default();
             if device_name != last_output {
                 crate::append_log(&format!("Output playing to {device_name}"));
@@ -263,6 +273,17 @@ impl Engine {
                     peaks[i] = chains[i].peak_db;
                     out.iter_mut().zip(buf.iter()).for_each(|(o, s)| *o += s);
                 }
+                if shared.monitor.load(Ordering::Relaxed) {
+                    let frames = out.len() / 2;
+                    if monitor_mono.len() < frames {
+                        monitor_mono.resize(frames, 0.0);
+                    }
+                    monitor.read(&mut monitor_mono[..frames]);
+                    for (pair, s) in out.chunks_exact_mut(2).zip(&monitor_mono[..frames]) {
+                        pair[0] += s;
+                        pair[1] += s;
+                    }
+                }
                 limiter.process(out, 2);
                 let master = out.iter().fold(0f32, |m, s| m.max(s.abs()));
                 if let Some(mut m) = shared.meters.try_lock() {
@@ -274,7 +295,12 @@ impl Engine {
         });
     }
 
-    fn spawn_mic(&mut self, config: &Config) {
+    fn spawn_mic(
+        &mut self,
+        config: &Config,
+        mut monitor: rtrb::Producer<f32>,
+        monitor_stats: Arc<resample::BridgeStats>,
+    ) {
         let Some(sink) = config.mic_sink.clone() else { return };
         let (mut producer, mut reader) = resample::bridge(1, 10.0);
         let mic_stats = reader.stats.clone();
@@ -299,9 +325,10 @@ impl Engine {
 
         let shared = self.shared.clone();
         let mic_id = config.mic_device.clone();
+        let preferred_mic = config.previous_default(Flow::Capture);
         self.supervise_with("Microphone", init, move |st, stop| {
             stream::phase("find device");
-            let device = device::resolve_physical(Flow::Capture, mic_id.as_deref())?;
+            let device = device::resolve_physical(Flow::Capture, mic_id.as_deref(), preferred_mic.as_deref())?;
             stream::run_capture(&device, 1, stop, |samples, glitch| {
                 if glitch {
                     mic_stats.record_glitch();
@@ -321,6 +348,14 @@ impl Engine {
                     for s in st.frame.iter() {
                         if producer.push(*s).is_err() {
                             break;
+                        }
+                    }
+                    if shared.monitor.load(Ordering::Relaxed) {
+                        monitor_stats.record_in(FRAME);
+                        for s in st.frame.iter() {
+                            if monitor.push(*s).is_err() {
+                                break;
+                            }
                         }
                     }
                     if let Some(mut m) = shared.meters.try_lock() {

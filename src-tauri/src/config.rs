@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use crate::audio::defaults::WindowsDefaults;
 use crate::audio::device::{self, DeviceInfo, Flow};
 use crate::dsp::chain::{ChannelSettings, MicSettings};
 
@@ -51,6 +52,10 @@ pub struct Config {
     /// Lower-case exe name -> channel index.
     pub app_rules: BTreeMap<String, usize>,
     pub launch_at_login: bool,
+    /// Like Sonar: make Game / Chat / Virtual Mic the Windows default devices.
+    pub set_windows_defaults: bool,
+    /// The user's own defaults from before AudioManager changed them, restored when turned off.
+    pub previous_defaults: Option<WindowsDefaults>,
 }
 
 impl Default for Config {
@@ -64,6 +69,8 @@ impl Default for Config {
             mic: MicSettings::default(),
             app_rules: BTreeMap::new(),
             launch_at_login: false,
+            set_windows_defaults: true,
+            previous_defaults: None,
         }
     }
 }
@@ -114,6 +121,63 @@ impl Config {
         let channels: Vec<String> =
             CHANNEL_NAMES.iter().zip(&self.channels).map(|(n, c)| format!("{n}={}", name(&c.source))).collect();
         format!("{} [{}; mic sink={}]", Self::path().display(), channels.join(", "), name(&self.mic_sink))
+    }
+
+    /// The Windows defaults Sonar would set: Game (playback), Chat (communications playback),
+    /// Virtual Mic (recording, both roles).
+    pub fn windows_default_targets(&self) -> WindowsDefaults {
+        let sink = |i: usize| self.channels.get(i).and_then(|c| c.sink.clone());
+        let virtual_mic = self.mic_sink.as_deref().and_then(cable_partner);
+        WindowsDefaults {
+            playback: sink(0),
+            playback_communications: sink(1),
+            recording: virtual_mic.clone(),
+            recording_communications: virtual_mic,
+        }
+    }
+
+    /// The user's own Windows default from before AudioManager made the cables default. Used as
+    /// the physical device when none is picked explicitly, since the Windows default is now a cable.
+    pub fn previous_default(&self, flow: Flow) -> Option<String> {
+        let saved = self.previous_defaults.as_ref()?;
+        match flow {
+            Flow::Render => saved.playback.clone(),
+            Flow::Capture => saved.recording.clone(),
+        }
+    }
+
+    /// The physical devices and cables the engine would use right now. When this changes (e.g.
+    /// headphones plugged in while following the Windows default), streams need a restart.
+    pub fn device_fingerprint(&self) -> String {
+        let active: HashSet<String> = [Flow::Render, Flow::Capture]
+            .into_iter()
+            .filter_map(|f| device::list(f).ok())
+            .flatten()
+            .map(|d| d.id)
+            .collect();
+        let resolve = |flow: Flow, id: &Option<String>| {
+            device::resolve_physical(flow, id.as_deref(), self.previous_default(flow).as_deref())
+                .ok()
+                .and_then(|d| device::device_id(&d).ok())
+                .unwrap_or_else(|| "none".into())
+        };
+        let cables: Vec<&str> = self
+            .channels
+            .iter()
+            .map(|c| &c.source)
+            .chain(std::iter::once(&self.mic_sink))
+            .map(|id| match id {
+                Some(id) if active.contains(id) => "ok",
+                Some(_) => "missing",
+                None => "-",
+            })
+            .collect();
+        format!(
+            "output={} mic={} cables={}",
+            resolve(Flow::Render, &self.output_device),
+            resolve(Flow::Capture, &self.mic_device),
+            cables.join(",")
+        )
     }
 
     /// Exe name -> render device id, for the routing watcher.

@@ -31,6 +31,8 @@ pub struct MicSettings {
     pub compressor: CompressorSettings,
     pub gain_db: f32,
     pub muted: bool,
+    /// Play the processed mic in your own headphones ("listen to my mic").
+    pub monitor: bool,
 }
 
 impl Default for MicSettings {
@@ -42,6 +44,7 @@ impl Default for MicSettings {
             compressor: CompressorSettings::default(),
             gain_db: 0.0,
             muted: false,
+            monitor: false,
         }
     }
 }
