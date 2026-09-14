@@ -201,7 +201,10 @@ select.input {
 .readout { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
 .readout .db { font: 500 15px var(--font-num); font-variant-numeric: tabular-nums; }
 .readout .pct { font: 12px var(--font-num); color: var(--faint); }
-.strip-btns { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px; }
+.strip-btns { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 6px; }
+/* Same height on every strip, whatever the button holds (text, readout font). */
+.strip-btns > .btn { height: 28px; display: flex; align-items: center; line-height: 1; padding-block: 0; min-width: 0; }
+.strip-btns > .btn.mute { justify-content: center; padding-inline: 0; }
 
 /* ---------- EQ ---------- */
 .drawer { --c: var(--game); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px 16px; display: grid; gap: 12px; }

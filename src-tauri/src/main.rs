@@ -295,6 +295,8 @@ fn show_main(app: &AppHandle, view: Option<&str>) {
         .title("AudioManager")
         .inner_size(1180.0, 760.0)
         .min_inner_size(440.0, 520.0)
+        // Tauri's file-drop handler swallows HTML drag and drop on Windows; the Apps view needs it.
+        .disable_drag_drop_handler()
         .build();
 }
 
