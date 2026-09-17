@@ -72,6 +72,9 @@ document.addEventListener("pointerdown", (e) => {
   if (!$("#fly-output-list").hidden && !e.target.closest(".fly-dev")) toggleOutputs(false);
 });
 
+const SPEAKER_ON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 6h2.5l3.5-3v10l-3.5-3h-2.5z"/><path d="M11 5.5a3.5 3.5 0 0 1 0 5M12.8 3.5a6.2 6.2 0 0 1 0 9"/></svg>';
+const SPEAKER_OFF = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 6h2.5l3.5-3v10l-3.5-3h-2.5z"/><path d="M11 6l3.5 4M14.5 6 11 10"/></svg>';
+
 function render() {
   renderOutputs();
   const bad = Object.values(snap.status).filter((v) => v !== "running").length;
@@ -88,9 +91,28 @@ function render() {
       out.textContent = `${input.value}%`;
       send(`ch${i}`, () => invoke("set_channel", { index: i, settings: s }));
     });
-    return h("div", { class: "fly-row", style: `--c:${c.color}` },
-      h("span", { class: "tape" }, c.name), input, out,
+    // Double-click or double-tap resets to 100 %, like the mixer faders.
+    input.addEventListener("dblclick", () => {
+      input.value = "100";
+      input.dispatchEvent(new Event("input"));
+    });
+    const mute = h("button", { type: "button", class: "btn mute fly-mute", "aria-label": `Mute ${c.name}` });
+    const row = h("div", { class: "fly-row", style: `--c:${c.color}` },
+      h("span", { class: "tape" }, c.name), input, out, mute,
       h("span", { class: "thin", "aria-hidden": "true" }, h("i", { "data-level": String(i) })));
+    const showMute = () => {
+      mute.setAttribute("aria-pressed", String(s.muted));
+      mute.title = s.muted ? `Unmute ${c.name}` : `Mute ${c.name}`;
+      mute.innerHTML = s.muted ? SPEAKER_OFF : SPEAKER_ON;
+      row.classList.toggle("muted", s.muted);
+    };
+    mute.addEventListener("click", () => {
+      s.muted = !s.muted;
+      showMute();
+      send(`ch${i}`, () => invoke("set_channel", { index: i, settings: s }));
+    });
+    showMute();
+    return row;
   }));
 
   const mic = snap.config.mic;

@@ -366,7 +366,10 @@ html:has(body.flyout-body), body.flyout-body { background: transparent; }
 .fly-dev-list button[aria-selected="true"]::before { background: var(--ok); }
 .fly-dev-list button[aria-selected="true"] { font-weight: 500; }
 .fly-rows { display: grid; gap: 10px; }
-.fly-row { --c: var(--game); display: grid; grid-template-columns: 58px minmax(0, 1fr) 44px; gap: 2px 10px; align-items: center; }
+.fly-row { --c: var(--game); display: grid; grid-template-columns: 58px minmax(0, 1fr) 40px 28px; gap: 2px 10px; align-items: center; }
+.fly-mute { width: 28px; height: 24px; padding: 0; display: grid; place-items: center; }
+.fly-mute svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.fly-row.muted input[type="range"], .fly-row.muted output, .fly-row.muted .thin { opacity: .45; }
 .fly-row .tape, .fly-mic .tape { font-size: 13px; padding: 0 6px; justify-self: start; }
 .fly-row input[type="range"] { margin: 0; width: 100%; accent-color: var(--c); }
 .fly-row output { font: 12px var(--font-num); text-align: right; font-variant-numeric: tabular-nums; }
