@@ -85,8 +85,11 @@ const fmtMs = (v) => `${v} ms`;
 function deviceName(list, id) {
   return list.find((d) => d.id === id)?.name;
 }
+// "Speakers (5- soundcore Select 4 Go )" -> "soundcore Select 4 Go": Windows puts the endpoint type
+// first and the actual device in parentheses, with a counter when names repeat.
 function shortName(name) {
-  return name ? name.replace(/\s*\(([^)]*)\)\s*$/, (m, hw) => (hw.length < 22 ? ` (${hw})` : "")) : name;
+  const m = name && /^(.*?)\s*\((.*)\)\s*$/.exec(name);
+  return m ? m[2].replace(/^\d+-\s*/, "").trim() || m[1] : name;
 }
 
 // ---------- EQ ----------

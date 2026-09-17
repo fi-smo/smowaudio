@@ -31,7 +31,11 @@ function send(key, fn) {
 
 // Same list as the main window: cables and other apps' virtual devices can't be the output.
 const VIRTUAL_HARDWARE = ["VB-Audio", "SteelSeries Sonar", "Elgato Virtual Audio", "Voicemeeter", "VoiceMeeter"];
-const shortName = (name) => name.replace(/\s*\(.*\)$/, "");
+// "Speakers (5- soundcore Select 4 Go )" -> "soundcore Select 4 Go" (same as the main window).
+function shortName(name) {
+  const m = /^(.*?)\s*\((.*)\)\s*$/.exec(name);
+  return m ? m[2].replace(/^\d+-\s*/, "").trim() || m[1] : name;
+}
 
 // An in-page list rather than a <select>: a native dropdown takes focus from the window,
 // which would hide the flyout mid-choice.
@@ -64,6 +68,9 @@ async function chooseOutput(id) {
   try { await invoke("set_output_device", { output: id }); } catch { await load(); }
 }
 $("#fly-output-btn").addEventListener("click", () => toggleOutputs($("#fly-output-list").hidden));
+document.addEventListener("pointerdown", (e) => {
+  if (!$("#fly-output-list").hidden && !e.target.closest(".fly-dev")) toggleOutputs(false);
+});
 
 function render() {
   renderOutputs();

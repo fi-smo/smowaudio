@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Smowaudio overlay</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="osd-body">
+  <div class="osd" id="osd" role="status" aria-live="polite">
+    <div class="osd-head">
+      <span class="tape" id="osd-tape"></span>
+      <span class="osd-label" id="osd-label"></span>
+      <b class="osd-value" id="osd-value"></b>
+    </div>
+    <div class="osd-bar" id="osd-bar" hidden><i id="osd-fill"></i><span class="osd-unity" id="osd-unity"></span></div>
+  </div>
+  <script src="osd.js"></script>
+</body>
+</html>

@@ -6,6 +6,7 @@ mod dsp;
 mod engine;
 mod hotkeys;
 mod icons;
+mod osd;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -593,6 +594,7 @@ fn main() {
             set_hotkey,
             pause_hotkeys,
             set_volume_step,
+            osd::take_osd,
             take_pending_view
         ])
         .setup(move |app| {

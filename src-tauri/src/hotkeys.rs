@@ -15,6 +15,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use crate::audio::device::{self, Flow};
 use crate::config::CHANNEL_NAMES;
 use crate::dsp::chain::ChannelSettings;
+use crate::osd::{self, Osd};
 use crate::{append_log, AppState};
 
 const MAX_VOLUME: f32 = 1.5;
@@ -34,8 +35,9 @@ pub fn start(app: &AppHandle) {
         // Registering waits for the UI thread, so it can't happen during setup, which runs on it.
         register_all(&handle);
         for (action, pressed) in rx {
-            if run(&handle, &action, pressed) {
+            if let Some(overlay) = run(&handle, &action, pressed) {
                 let _ = handle.emit("config-changed", ());
+                osd::show(&handle, overlay);
             }
         }
     });
@@ -87,11 +89,12 @@ pub fn unregister_all(app: &AppHandle) {
     let _ = app.global_shortcut().unregister_all();
 }
 
-/// Performs one action. Returns true if settings changed and the windows should refresh.
-fn run(app: &AppHandle, action: &str, pressed: bool) -> bool {
+/// Performs one action. Returns the overlay describing the change, or None if nothing changed
+/// (or the action only opens a window).
+fn run(app: &AppHandle, action: &str, pressed: bool) -> Option<Osd> {
     let hold = matches!(action, "mic.push_to_talk" | "mic.push_to_mute");
     if !pressed && !hold {
-        return false;
+        return None;
     }
     let state = app.state::<AppState>();
     let parts: Vec<&str> = action.split('.').collect();
@@ -105,17 +108,31 @@ fn run(app: &AppHandle, action: &str, pressed: bool) -> bool {
                 "eq" => s.eq.enabled = !s.eq.enabled,
                 _ => {}
             };
-            if *name == "master" {
+            let (group, tape, settings) = if *name == "master" {
                 let mut settings = state.config.lock().master.clone();
                 edit(&mut settings);
-                state.set_master_settings(settings);
-            } else if let Some(index) = CHANNEL_NAMES.iter().position(|c| c.eq_ignore_ascii_case(name)) {
+                state.set_master_settings(settings.clone());
+                ("master", "Master", settings)
+            } else {
+                let index = CHANNEL_NAMES.iter().position(|c| c.eq_ignore_ascii_case(name))?;
                 let mut settings = state.config.lock().channels[index].settings.clone();
                 edit(&mut settings);
-                state.set_channel_settings(index, settings);
-            } else {
-                return false;
-            }
+                state.set_channel_settings(index, settings.clone());
+                (["game", "chat", "media", "aux"][index], CHANNEL_NAMES[index], settings)
+            };
+            Some(match *op {
+                "eq" => toggle(group, tape, "EQ", settings.eq.enabled),
+                "volume_up" | "volume_down" | "mute" => Osd {
+                    group,
+                    tape: tape.into(),
+                    label: "Volume".into(),
+                    value: if settings.muted { "Muted".into() } else { format!("{:.0} %", settings.volume * 100.0) },
+                    level: Some(settings.volume / MAX_VOLUME),
+                    unity: Some(1.0 / MAX_VOLUME),
+                    dim: settings.muted,
+                },
+                _ => return None,
+            })
         }
         ["mic", op] => {
             let mut mic = state.config.lock().mic.clone();
@@ -131,29 +148,76 @@ fn run(app: &AppHandle, action: &str, pressed: bool) -> bool {
                 "gate" => mic.gate.enabled = !mic.gate.enabled,
                 "eq" => mic.eq.enabled = !mic.eq.enabled,
                 "compressor" => mic.compressor.enabled = !mic.compressor.enabled,
-                _ => return false,
+                _ => return None,
             }
-            state.set_mic_settings(mic);
+            state.set_mic_settings(mic.clone());
+            Some(match *op {
+                "mute" | "push_to_talk" | "push_to_mute" => Osd {
+                    value: if mic.muted { "Muted".into() } else { "Live".into() },
+                    dim: mic.muted,
+                    ..toggle("mic", "Mic", "Microphone", !mic.muted)
+                },
+                "gain_up" | "gain_down" => Osd {
+                    group: "mic",
+                    tape: "Mic".into(),
+                    label: "Gain".into(),
+                    value: format!("{:+.0} dB", mic.gain_db),
+                    level: Some((mic.gain_db + MIC_GAIN_LIMIT_DB) / (2.0 * MIC_GAIN_LIMIT_DB)),
+                    unity: Some(0.5),
+                    dim: mic.muted,
+                },
+                "monitor" => toggle("mic", "Mic", "Listen to yourself", mic.monitor),
+                "denoise" => toggle("mic", "Mic", "Noise removal", mic.denoise.enabled),
+                "low_latency" => toggle("mic", "Mic", "Low-latency model", mic.denoise.low_latency),
+                "gate" => toggle("mic", "Mic", "Noise gate", mic.gate.enabled),
+                "eq" => toggle("mic", "Mic", "EQ", mic.eq.enabled),
+                _ => toggle("mic", "Mic", "Compressor", mic.compressor.enabled),
+            })
         }
-        ["output", "next"] => return cycle_output(&state, 1),
-        ["output", "previous"] => return cycle_output(&state, -1),
+        ["output", "next"] => cycle_output(&state, 1),
+        ["output", "previous"] => cycle_output(&state, -1),
         ["app", "mixer"] => {
             crate::show_main(app, None);
-            return false;
+            None
         }
         ["app", "flyout"] => {
             crate::toggle_flyout_at_tray(app);
-            return false;
+            None
         }
         ["windows_defaults"] => {
             let enabled = !state.config.lock().set_windows_defaults;
             if let Err(e) = crate::set_windows_defaults_enabled(&state, enabled) {
                 append_log(&format!("shortcut could not change Windows default devices: {e}"));
+                return None;
             }
+            Some(toggle("system", "Windows", "Default devices", enabled))
         }
-        _ => return false,
+        _ => None,
     }
-    true
+}
+
+fn toggle(group: &'static str, tape: &str, label: &str, on: bool) -> Osd {
+    Osd {
+        group,
+        tape: tape.into(),
+        label: label.into(),
+        value: if on { "On".into() } else { "Off".into() },
+        level: None,
+        unity: None,
+        dim: !on,
+    }
+}
+
+/// "Speakers (5- soundcore Select 4 Go )" -> "soundcore Select 4 Go", like the UI shows it.
+fn device_label(name: &str) -> String {
+    let inner = name.strip_suffix(')').and_then(|rest| rest.split_once(" (")).map(|(_, inner)| inner);
+    let Some(inner) = inner else { return name.to_string() };
+    let digits = inner.len() - inner.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let inner = if digits > 0 { inner[digits..].strip_prefix('-').unwrap_or(&inner[digits..]) } else { inner };
+    match inner.trim() {
+        "" => name.to_string(),
+        label => label.to_string(),
+    }
 }
 
 /// Two decimals, so repeated steps land on 55 % rather than 54.999 %.
@@ -162,11 +226,11 @@ fn round_volume(v: f32) -> f32 {
 }
 
 /// Moves the output to the next or previous connected headphones/speakers.
-fn cycle_output(state: &AppState, direction: isize) -> bool {
-    let Ok(devices) = device::list(Flow::Render) else { return false };
+fn cycle_output(state: &AppState, direction: isize) -> Option<Osd> {
+    let devices = device::list(Flow::Render).ok()?;
     let physical: Vec<_> = devices.into_iter().filter(|d| !d.is_virtual()).collect();
     if physical.is_empty() {
-        return false;
+        return None;
     }
     let current = {
         let config = state.config.lock();
@@ -179,6 +243,28 @@ fn cycle_output(state: &AppState, direction: isize) -> bool {
         Some(i) => (i as isize + direction).rem_euclid(len) as usize,
         None => 0,
     };
-    state.set_output(Some(physical[next].id.clone()));
-    true
+    let device = &physical[next];
+    state.set_output(Some(device.id.clone()));
+    Some(Osd {
+        group: "output",
+        tape: "Output".into(),
+        label: String::new(),
+        value: device_label(&device.name),
+        level: None,
+        unity: None,
+        dim: false,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::device_label;
+
+    #[test]
+    fn device_label_shows_the_device_not_the_endpoint_type() {
+        assert_eq!(device_label("Speakers (5- soundcore Select 4 Go )"), "soundcore Select 4 Go");
+        assert_eq!(device_label("Headphones (Arctis Nova Pro Wireless)"), "Arctis Nova Pro Wireless");
+        assert_eq!(device_label("CABLE-A Input (VB-Audio Cable A)"), "VB-Audio Cable A");
+        assert_eq!(device_label("Plain name"), "Plain name");
+    }
 }
