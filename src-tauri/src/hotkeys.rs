@@ -6,10 +6,11 @@
 //! - `output.<next|previous>`, `app.<mixer|flyout>`, `windows_defaults`
 
 use std::collections::BTreeMap;
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 use crate::audio::device::{self, Flow};
@@ -21,6 +22,13 @@ use crate::{append_log, AppState};
 const MAX_VOLUME: f32 = 1.5;
 const MIC_GAIN_STEP_DB: f32 = 1.0;
 const MIC_GAIN_LIMIT_DB: f32 = 24.0;
+/// Holding a volume or gain shortcut keeps adjusting after this delay, like a held key repeats.
+const REPEAT_DELAY: Duration = Duration::from_millis(350);
+/// Fine steps while held: 1 % of volume, 1 dB of gain.
+const FINE_VOLUME_STEP: f32 = 0.01;
+const GAIN_REPEAT_INTERVAL: Duration = Duration::from_millis(80);
+/// Stops a repeat whose key release was somehow missed.
+const MAX_HOLD: Duration = Duration::from_secs(15);
 
 /// Shortcut presses go to one worker thread: actions touch COM and may restart the output
 /// stream, which must not happen on the UI thread, and presses must apply in order.
@@ -34,13 +42,62 @@ pub fn start(app: &AppHandle) {
         let _com = crate::audio::ComGuard::new();
         // Registering waits for the UI thread, so it can't happen during setup, which runs on it.
         register_all(&handle);
-        for (action, pressed) in rx {
-            if let Some(overlay) = run(&handle, &action, pressed) {
-                let _ = handle.emit("config-changed", ());
-                osd::show(&handle, overlay);
+        let apply = |action: &str, pressed: bool, fine: bool| {
+            let overlay = run(&handle, action, pressed, fine);
+            if let Some(overlay) = &overlay {
+                crate::notify_config_changed(&handle, "shortcut");
+                osd::show(&handle, overlay.clone());
+            }
+            overlay.is_some()
+        };
+        // The volume/gain shortcut being held: (action, next repeat, first pressed).
+        let mut held: Option<(String, Instant, Instant)> = None;
+        loop {
+            let message = match &held {
+                Some((_, due, _)) => match rx.recv_timeout(due.saturating_duration_since(Instant::now())) {
+                    Ok(message) => Some(message),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => break,
+                },
+                None => match rx.recv() {
+                    Ok(message) => Some(message),
+                    Err(_) => break,
+                },
+            };
+            match message {
+                Some((action, pressed)) => {
+                    if !pressed && held.as_ref().is_some_and(|(a, _, _)| *a == action) {
+                        held = None;
+                    }
+                    if apply(&action, pressed, false) && pressed && repeat_interval(&handle, &action).is_some() {
+                        let now = Instant::now();
+                        held = Some((action, now + REPEAT_DELAY, now));
+                    }
+                }
+                None => {
+                    let Some((action, _, since)) = held.take() else { continue };
+                    let Some(interval) = repeat_interval(&handle, &action) else { continue };
+                    if since.elapsed() < MAX_HOLD && apply(&action, true, true) {
+                        held = Some((action, Instant::now() + interval, since));
+                    }
+                }
             }
         }
     });
+}
+
+/// How often a held shortcut repeats, or None if it doesn't. Volume moves at 8 steps per second
+/// (40 %/s with the default 5 % step), in 1 % increments so it glides.
+fn repeat_interval(app: &AppHandle, action: &str) -> Option<Duration> {
+    if action.ends_with(".volume_up") || action.ends_with(".volume_down") {
+        let step = app.state::<AppState>().config.lock().volume_step.max(FINE_VOLUME_STEP);
+        let per_second = step * 8.0;
+        Some(Duration::from_secs_f32(FINE_VOLUME_STEP / per_second).max(Duration::from_millis(15)))
+    } else if action == "mic.gain_up" || action == "mic.gain_down" {
+        Some(GAIN_REPEAT_INTERVAL)
+    } else {
+        None
+    }
 }
 
 /// Registers every bound shortcut, replacing the previous set, and returns why bindings failed
@@ -89,9 +146,10 @@ pub fn unregister_all(app: &AppHandle) {
     let _ = app.global_shortcut().unregister_all();
 }
 
-/// Performs one action. Returns the overlay describing the change, or None if nothing changed
-/// (or the action only opens a window).
-fn run(app: &AppHandle, action: &str, pressed: bool) -> Option<Osd> {
+/// Performs one action; `fine` is a repeat of a held volume shortcut, which moves 1 % at a time.
+/// Returns the overlay describing the change, or None if nothing changed (or the action only
+/// opens a window).
+fn run(app: &AppHandle, action: &str, pressed: bool, fine: bool) -> Option<Osd> {
     let hold = matches!(action, "mic.push_to_talk" | "mic.push_to_mute");
     if !pressed && !hold {
         return None;
@@ -100,7 +158,7 @@ fn run(app: &AppHandle, action: &str, pressed: bool) -> Option<Osd> {
     let parts: Vec<&str> = action.split('.').collect();
     match parts.as_slice() {
         ["channel", name, op] => {
-            let step = state.config.lock().volume_step;
+            let step = if fine { FINE_VOLUME_STEP } else { state.config.lock().volume_step };
             let edit = |s: &mut ChannelSettings| match *op {
                 "volume_up" => s.volume = round_volume(s.volume + step).min(MAX_VOLUME),
                 "volume_down" => s.volume = round_volume(s.volume - step).max(0.0),

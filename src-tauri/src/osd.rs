@@ -1,7 +1,7 @@
 //! On-screen overlay in the top-right corner, confirming what a keyboard shortcut changed.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -33,7 +33,8 @@ pub struct Osd {
 }
 
 static LATEST: Mutex<Option<Osd>> = Mutex::new(None);
-static GENERATION: AtomicU64 = AtomicU64::new(0);
+static HIDE_AT: Mutex<Option<Instant>> = Mutex::new(None);
+static TIMER_RUNNING: AtomicBool = AtomicBool::new(false);
 
 /// Shows the overlay (creating its window the first time) and hides it again shortly after.
 /// Call off the UI thread; creating the window waits for it.
@@ -71,34 +72,53 @@ pub fn show(app: &AppHandle, osd: Osd) {
         },
     };
 
-    // Top-right of the screen the mouse is on, which is where the user is looking.
-    let monitor = app
-        .cursor_position()
-        .ok()
-        .and_then(|p| window.monitor_from_point(p.x, p.y).ok().flatten())
-        .or_else(|| window.primary_monitor().ok().flatten());
-    if let Some(monitor) = monitor {
-        let scale = monitor.scale_factor();
-        let area = monitor.work_area();
-        let _ = window.set_size(LogicalSize::new(SIZE.0, SIZE.1));
-        let x = area.position.x as f64 + area.size.width as f64 - (SIZE.0 + MARGIN) * scale;
-        let y = area.position.y as f64 + MARGIN * scale;
-        let _ = window.set_position(PhysicalPosition::new(x, y));
+    // Already up (a held volume shortcut updates it ~40 times a second): just extend it.
+    if !window.is_visible().unwrap_or(false) {
+        // Top-right of the screen the mouse is on, which is where the user is looking.
+        let monitor = app
+            .cursor_position()
+            .ok()
+            .and_then(|p| window.monitor_from_point(p.x, p.y).ok().flatten())
+            .or_else(|| window.primary_monitor().ok().flatten());
+        if let Some(monitor) = monitor {
+            let scale = monitor.scale_factor();
+            let area = monitor.work_area();
+            let _ = window.set_size(LogicalSize::new(SIZE.0, SIZE.1));
+            let x = area.position.x as f64 + area.size.width as f64 - (SIZE.0 + MARGIN) * scale;
+            let y = area.position.y as f64 + MARGIN * scale;
+            let _ = window.set_position(PhysicalPosition::new(x, y));
+        }
+        let _ = window.show();
     }
-    let _ = window.show();
 
     // Hide the window itself afterwards: a transparent topmost window left over a game can
-    // stop it presenting directly to the screen, which costs latency.
-    let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
-    let handle = app.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(VISIBLE);
-        if GENERATION.load(Ordering::Relaxed) == generation {
+    // stop it presenting directly to the screen, which costs latency. One timer thread at a time;
+    // showing again only pushes its deadline back.
+    let mut hide_at = HIDE_AT.lock();
+    *hide_at = Some(Instant::now() + VISIBLE);
+    if !TIMER_RUNNING.swap(true, Ordering::Relaxed) {
+        let handle = app.clone();
+        std::thread::spawn(move || loop {
+            let due = HIDE_AT.lock().unwrap_or_else(Instant::now);
+            let now = Instant::now();
+            if now < due {
+                std::thread::sleep(due - now);
+                continue;
+            }
+            // Decide and hide under the lock, so a show() can't slip in between and be hidden
+            // straight away. show() runs on the shortcut worker, never the UI thread.
+            let mut hide_at = HIDE_AT.lock();
+            if hide_at.is_some_and(|due| Instant::now() < due) {
+                continue;
+            }
+            *hide_at = None;
             if let Some(window) = handle.get_webview_window("osd") {
                 let _ = window.hide();
             }
-        }
-    });
+            TIMER_RUNNING.store(false, Ordering::Relaxed);
+            break;
+        });
+    }
 }
 
 /// The overlay to draw right after its window loads.

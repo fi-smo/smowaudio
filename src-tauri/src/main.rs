@@ -127,9 +127,17 @@ fn get_meters(state: State<AppState>) -> Meters {
     state.engine.lock().as_ref().map(|e| e.meters()).unwrap_or_default()
 }
 
+/// Tells every window that settings changed, so they show it right away. `source` is the window
+/// label (or "shortcut") that made the change; that window ignores it, so a fader being dragged
+/// doesn't get redrawn under the cursor.
+fn notify_config_changed(app: &AppHandle, source: &str) {
+    let _ = app.emit("config-changed", serde_json::json!({ "source": source }));
+}
+
 #[tauri::command]
-fn set_master(state: State<AppState>, settings: ChannelSettings) {
-    state.set_master_settings(settings);
+fn set_master(app: AppHandle, webview: WebviewWindow, settings: ChannelSettings) {
+    app.state::<AppState>().set_master_settings(settings);
+    notify_config_changed(&app, webview.label());
 }
 
 /// Async on purpose: creating a window from a synchronous command can deadlock WebView2 on
@@ -146,25 +154,27 @@ fn take_pending_view(state: State<AppState>) -> Option<String> {
 }
 
 #[tauri::command]
-fn set_mic(state: State<AppState>, settings: MicSettings) {
-    state.set_mic_settings(settings);
+fn set_mic(app: AppHandle, webview: WebviewWindow, settings: MicSettings) {
+    app.state::<AppState>().set_mic_settings(settings);
+    notify_config_changed(&app, webview.label());
 }
 
 #[tauri::command]
-fn set_channel(state: State<AppState>, index: usize, settings: ChannelSettings) -> CmdResult<()> {
+fn set_channel(app: AppHandle, webview: WebviewWindow, index: usize, settings: ChannelSettings) -> CmdResult<()> {
     if index >= config::CHANNEL_COUNT {
         return Err("invalid channel".into());
     }
-    state.set_channel_settings(index, settings);
+    app.state::<AppState>().set_channel_settings(index, settings);
+    notify_config_changed(&app, webview.label());
     Ok(())
 }
 
 /// Switches headphones/speakers from the tray flyout without restarting the other streams.
 #[tauri::command]
-async fn set_output_device(app: AppHandle, output: Option<String>) {
+async fn set_output_device(app: AppHandle, webview: WebviewWindow, output: Option<String>) {
     let _com = audio::ComGuard::new();
     app.state::<AppState>().set_output(output);
-    let _ = app.emit("config-changed", ());
+    notify_config_changed(&app, webview.label());
 }
 
 /// Binds (or with `None` unbinds) a global shortcut and re-registers them all. A combination

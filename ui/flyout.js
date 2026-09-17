@@ -174,8 +174,16 @@ new ResizeObserver(() => {
 
 // Volumes may have changed in the main window since the flyout was last open.
 listen("flyout-shown", () => { toggleOutputs(false); load().catch(() => {}); });
-// A shortcut or the main window changed something.
-listen("config-changed", () => load().catch(() => {}));
+// The main window or a shortcut changed something. Changes made here are skipped (so a slider
+// being dragged isn't redrawn), and bursts reload at most about 8 times a second.
+let reloadTimer = null;
+listen("config-changed", (e) => {
+  if (e.payload?.source === "flyout" || reloadTimer) return;
+  reloadTimer = setTimeout(() => {
+    reloadTimer = null;
+    if (!document.hidden) load().catch(() => {});
+  }, 120);
+});
 window.addEventListener("focus", () => load().catch(() => {}));
 load().catch(() => {});
 pollMeters();

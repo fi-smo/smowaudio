@@ -951,8 +951,17 @@ setInterval(async () => {
 // Settings changed in the tray flyout while this window was in the background.
 window.addEventListener("focus", () => { if (snap && !document.querySelector(".fader:active")) loadState().catch(showError); });
 listen("show-view", (e) => setView(e.payload));
-// A shortcut or the tray flyout changed settings.
-listen("config-changed", () => { if (!recording) loadState().catch(showError); });
+// The tray flyout or a shortcut changed settings: show it right away. Changes made here are
+// skipped (so a fader being dragged isn't redrawn), and bursts, like a held volume shortcut,
+// reload at most about 8 times a second.
+let reloadTimer = null;
+listen("config-changed", (e) => {
+  if (e.payload?.source === "main" || reloadTimer) return;
+  reloadTimer = setTimeout(() => {
+    reloadTimer = null;
+    if (!recording) loadState().catch(showError);
+  }, 120);
+});
 
 (async () => {
   try {
