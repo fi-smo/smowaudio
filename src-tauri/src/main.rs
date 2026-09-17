@@ -93,8 +93,10 @@ fn set_master(state: State<AppState>, settings: ChannelSettings) {
     }
 }
 
+/// Async on purpose: creating a window from a synchronous command can deadlock WebView2 on
+/// Windows, leaving a blank white window (tauri-apps/wry#583).
 #[tauri::command]
-fn open_main_window(app: AppHandle, view: Option<String>) {
+async fn open_main_window(app: AppHandle, view: Option<String>) {
     show_main(&app, view.as_deref());
 }
 
@@ -282,6 +284,19 @@ fn open_window(app: &AppHandle) {
     show_main(app, None);
 }
 
+/// `--window` from style.css for the current Windows app theme.
+fn window_background() -> tauri::window::Color {
+    let light = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+        .and_then(|key| key.get_value::<u32, _>("AppsUseLightTheme"))
+        .map_or(true, |v| v != 0);
+    if light {
+        tauri::window::Color(0xf6, 0xf7, 0xf9, 0xff)
+    } else {
+        tauri::window::Color(0x16, 0x18, 0x1d, 0xff)
+    }
+}
+
 /// Shows the main window (creating it if needed), optionally on a given screen.
 fn show_main(app: &AppHandle, view: Option<&str>) {
     if let Some(flyout) = app.get_webview_window("flyout") {
@@ -302,6 +317,8 @@ fn show_main(app: &AppHandle, view: Option<&str>) {
         .title("AudioManager")
         .inner_size(1180.0, 760.0)
         .min_inner_size(440.0, 520.0)
+        // The page's own background, so the window doesn't flash white while WebView2 starts.
+        .background_color(window_background())
         // Tauri's file-drop handler swallows HTML drag and drop on Windows; the Apps view needs it.
         .disable_drag_drop_handler()
         .build();

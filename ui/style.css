@@ -242,6 +242,8 @@ select.input {
 .appicon.live.has-img { border-color: color-mix(in srgb, var(--c) 55%, var(--line)); }
 .appcard .icon img { width: 28px; height: 28px; display: block; object-fit: contain; -webkit-user-drag: none; }
 .appicon img { width: 18px; height: 18px; display: block; object-fit: contain; -webkit-user-drag: none; }
+/* Pinned to the text column: the System sounds card has no meter, so auto-placement would push its sub line into the meter column. */
+.appcard .title, .appcard .sub { grid-column: 2; }
 .appcard .title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .appcard .sub { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--faint); font: 11px var(--font-num); }
 .appcard .sub em { font-style: normal; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
