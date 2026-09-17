@@ -69,14 +69,14 @@ pub fn start(app: &AppHandle) {
                     if !pressed && held.as_ref().is_some_and(|(a, _, _)| *a == action) {
                         held = None;
                     }
-                    if apply(&action, pressed, false) && pressed && repeat_interval(&handle, &action).is_some() {
+                    if apply(&action, pressed, false) && pressed && repeat_interval(&action, Duration::ZERO).is_some() {
                         let now = Instant::now();
                         held = Some((action, now + REPEAT_DELAY, now));
                     }
                 }
                 None => {
                     let Some((action, _, since)) = held.take() else { continue };
-                    let Some(interval) = repeat_interval(&handle, &action) else { continue };
+                    let Some(interval) = repeat_interval(&action, since.elapsed()) else { continue };
                     if since.elapsed() < MAX_HOLD && apply(&action, true, true) {
                         held = Some((action, Instant::now() + interval, since));
                     }
@@ -86,13 +86,13 @@ pub fn start(app: &AppHandle) {
     });
 }
 
-/// How often a held shortcut repeats, or None if it doesn't. Volume moves at 8 steps per second
-/// (40 %/s with the default 5 % step), in 1 % increments so it glides.
-fn repeat_interval(app: &AppHandle, action: &str) -> Option<Duration> {
+/// How often a held shortcut repeats, or None if it doesn't. Volume glides in 1 % increments at
+/// 30 %/s, speeding up to 80 %/s over 1.5 s of holding, whatever step a single press uses.
+fn repeat_interval(action: &str, held_for: Duration) -> Option<Duration> {
     if action.ends_with(".volume_up") || action.ends_with(".volume_down") {
-        let step = app.state::<AppState>().config.lock().volume_step.max(FINE_VOLUME_STEP);
-        let per_second = step * 8.0;
-        Some(Duration::from_secs_f32(FINE_VOLUME_STEP / per_second).max(Duration::from_millis(15)))
+        let ramp = (held_for.as_secs_f32() / 1.5).min(1.0);
+        let per_second = 0.30 + 0.50 * ramp;
+        Some(Duration::from_secs_f32(FINE_VOLUME_STEP / per_second).max(Duration::from_millis(12)))
     } else if action == "mic.gain_up" || action == "mic.gain_down" {
         Some(GAIN_REPEAT_INTERVAL)
     } else {

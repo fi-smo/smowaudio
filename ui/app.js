@@ -825,7 +825,7 @@ function shortcutsPane() {
   return h("section", { class: "pane shortcuts" },
     h("h3", {}, "Keyboard shortcuts"),
     h("p", { class: "hint" }, "Work anywhere in Windows, even while a game has focus. Click a shortcut, then press the keys. Esc cancels, Backspace removes it."),
-    h("label", { class: "field inline" }, h("span", {}, "Volume up/down step"), step),
+    h("label", { class: "field inline" }, h("span", {}, "Volume step per press (holding glides)"), step),
     h("div", { class: "keygroups" }, ...groups));
 }
 
