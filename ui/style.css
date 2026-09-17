@@ -340,8 +340,9 @@ kbd {
 
 /* ---------- tray flyout ---------- */
 /* The window is sized to .flyout's height (see fit_flyout), so .flyout must not stretch to the window. */
-body.flyout-body { background: var(--window); border: 1px solid var(--line-strong); }
-.flyout { padding: 14px; display: grid; gap: 12px; align-content: start; }
+html:has(body.flyout-body), body.flyout-body { background: transparent; }
+/* The window is transparent; this card is the visible flyout, with Windows 11's 8px corners. */
+.flyout { padding: 14px; display: grid; gap: 12px; align-content: start; background: var(--window); border: 1px solid var(--line-strong); border-radius: 8px; }
 .fly-head { display: flex; align-items: center; gap: 8px; line-height: 20px; }
 .fly-dev { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 3px; font-size: 13px; min-width: 0; }
 .fly-dev-btn, .fly-dev-list button {

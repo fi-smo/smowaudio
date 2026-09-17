@@ -466,8 +466,11 @@ fn toggle_flyout(app: &AppHandle, click: PhysicalPosition<f64>) {
                 .title("Smowaudio")
                 .inner_size(FLYOUT_SIZE.0, FLYOUT_SIZE.1)
                 .decorations(false)
-                // No Windows drop shadow: it darkens a wide area around the flyout. The page draws its own border.
+                // No Windows drop shadow: it darkens a wide area around the flyout. Without it Windows
+                // won't round the corners either, so the window is transparent and the page draws
+                // its own rounded card and border.
                 .shadow(false)
+                .transparent(true)
                 .resizable(false)
                 .skip_taskbar(true)
                 .always_on_top(true)

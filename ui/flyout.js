@@ -141,10 +141,10 @@ async function pollMeters() {
   setTimeout(pollMeters, 60);
 }
 
-// Keep the window exactly as tall as its content (+2 for the body's border).
+// Keep the window exactly as tall as the card (its border included).
 let fittedHeight = 0;
 new ResizeObserver(() => {
-  const height = Math.ceil($(".flyout").getBoundingClientRect().height) + 2;
+  const height = Math.ceil($(".flyout").getBoundingClientRect().height);
   if (height === fittedHeight) return;
   fittedHeight = height;
   invoke("fit_flyout", { height }).catch(() => {});
