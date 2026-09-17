@@ -1,4 +1,4 @@
-/* AudioManager — console-style UI. Windows fonts only, so nothing loads from the network. */
+/* Smowaudio — console-style UI. Windows fonts only, so nothing loads from the network. */
 :root {
   --ground: #e9ebef;
   --window: #f6f7f9;
@@ -301,6 +301,31 @@ select.input {
 .field > span { font-size: 12px; color: var(--muted); }
 .field .hint { margin: 0; color: var(--faint); font-size: 12px; }
 .rowline { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+/* ---------- keyboard shortcuts ---------- */
+.pane.shortcuts { grid-column: 1 / -1; }
+.field.inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.keygroups { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 18px 24px; align-items: start; }
+.keygroup { display: grid; gap: 2px; align-content: start; }
+.keygroup > .tape, .keygroup > h4 { justify-self: start; margin: 0 0 4px; }
+.keygroup > .tape { font-size: 13px; padding: 0 6px; }
+.keygroup > h4 { font: 600 13px/1.35 var(--font-label); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.keyrow { display: grid; grid-template-columns: minmax(0, 1fr) auto 22px; align-items: center; gap: 0 6px; min-height: 30px; }
+.keylabel { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.keybind {
+  display: inline-flex; align-items: center; gap: 3px; min-width: 64px; justify-content: center; padding: 2px 5px;
+  border: 1px solid var(--line); background: var(--raised); border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--text);
+}
+.keybind:hover { border-color: var(--line-strong); }
+.keybind.empty { color: var(--faint); border-style: dashed; background: none; }
+.keybind.recording { border-color: var(--focus); border-style: solid; color: var(--focus); background: color-mix(in srgb, var(--focus) 10%, var(--panel)); }
+kbd {
+  font: 500 11px/1 var(--font-num); padding: 3px 5px; border-radius: 4px; background: var(--panel);
+  border: 1px solid var(--line-strong); border-bottom-width: 2px; color: var(--text); white-space: nowrap;
+}
+.keyclear { padding: 0; width: 22px; height: 22px; font-size: 15px; line-height: 1; }
+.keynote { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+.keynote:empty { display: none; }
+.keynote.bad { color: var(--hot); }
 .statuslist { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; font-size: 13px; }
 .statuslist .ok { color: var(--ok); }
 .statuslist .bad { color: var(--hot); overflow-wrap: anywhere; }
@@ -318,9 +343,22 @@ select.input {
 body.flyout-body { background: var(--window); border: 1px solid var(--line-strong); }
 .flyout { padding: 14px; display: grid; gap: 12px; align-content: start; }
 .fly-head { display: flex; align-items: center; gap: 8px; line-height: 20px; }
-.fly-dev { display: flex; align-items: center; justify-content: space-between; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px; font-size: 13px; min-width: 0; }
-.fly-dev span { color: var(--muted); flex: none; }
-.fly-dev b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fly-dev { display: grid; gap: 3px; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 3px; font-size: 13px; min-width: 0; }
+.fly-dev-btn, .fly-dev-list button {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; border: 0; background: none;
+  border-radius: 5px; padding: 4px 7px; cursor: pointer; text-align: left; font-size: 13px;
+}
+.fly-dev-btn:hover, .fly-dev-list button:hover { background: var(--raised); }
+.fly-dev-btn > span { color: var(--muted); flex: none; }
+.fly-dev-btn b { margin-left: auto; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fly-dev-btn svg { width: 12px; height: 12px; flex: none; fill: none; stroke: var(--muted); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; transition: transform .15s; }
+.fly-dev-btn[aria-expanded="true"] svg { transform: rotate(180deg); }
+.fly-dev-list { display: grid; gap: 1px; border-top: 1px solid var(--line); padding-top: 3px; }
+.fly-dev-list button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The selected device gets a dot; the others keep the same indent. */
+.fly-dev-list button::before { content: ""; width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.fly-dev-list button[aria-selected="true"]::before { background: var(--ok); }
+.fly-dev-list button[aria-selected="true"] { font-weight: 500; }
 .fly-rows { display: grid; gap: 10px; }
 .fly-row { --c: var(--game); display: grid; grid-template-columns: 58px minmax(0, 1fr) 44px; gap: 2px 10px; align-items: center; }
 .fly-row .tape, .fly-mic .tape { font-size: 13px; padding: 0 6px; justify-self: start; }

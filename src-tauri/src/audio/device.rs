@@ -106,7 +106,7 @@ pub fn by_id(id: &str) -> Result<IMMDevice> {
 }
 
 /// The device to use for a physical role, in order: the user's explicit choice if it's connected;
-/// `preferred` (their own Windows default from before AudioManager made the cables default) if
+/// `preferred` (their own Windows default from before Smowaudio made the cables default) if
 /// it's connected and physical; the current Windows default if physical; any physical device.
 /// Never a virtual device: a cable would feed back into itself, another mixer's device may be dead.
 pub fn resolve_physical(flow: Flow, configured: Option<&str>, preferred: Option<&str>) -> Result<IMMDevice> {

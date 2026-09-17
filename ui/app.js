@@ -722,12 +722,168 @@ function renderSettings() {
     h("div", { class: "settings" },
       h("section", { class: "pane" }, h("h3", {}, "Devices"), output.el, mic.el, micSink.el, ...sources.map((s) => s.el), apply),
       h("section", { class: "pane" }, h("h3", {}, "General"),
-        launch.el, h("p", { class: "hint" }, "Starts AudioManager in the tray when you sign in."),
+        launch.el, h("p", { class: "hint" }, "Starts Smowaudio in the tray when you sign in."),
         defaults.el, h("p", { class: "hint" }, "Like Sonar: Game becomes the default playback device, Chat the communications device and the Virtual Mic the recording device. Turning this off restores the defaults you had before.")),
       h("section", { class: "pane" }, h("h3", {}, "Audio streams"), statusList,
-        h("p", { class: "hint" }, "Problems are also written to %APPDATA%\\AudioManager\\audiomanager.log."))));
+        h("p", { class: "hint" }, "Problems are also written to %APPDATA%\\Smowaudio\\smowaudio.log.")),
+      shortcutsPane()));
   renderStatus();
 }
+
+// ---------- keyboard shortcuts ----------
+// Action ids must match hotkeys.rs.
+const channelShortcuts = (id, name, color) => ({
+  title: name, color, actions: [
+    [`channel.${id}.volume_up`, "Volume up"],
+    [`channel.${id}.volume_down`, "Volume down"],
+    [`channel.${id}.mute`, "Mute on/off"],
+    [`channel.${id}.eq`, "EQ on/off"],
+  ],
+});
+const SHORTCUT_GROUPS = [
+  { title: "General", actions: [
+    ["app.mixer", "Open the mixer"],
+    ["app.flyout", "Show or hide the tray flyout"],
+    ["output.next", "Next output device"],
+    ["output.previous", "Previous output device"],
+    ["windows_defaults", "Windows default devices on/off"],
+  ] },
+  ...CHANNELS.map((c) => channelShortcuts(c.name.toLowerCase(), c.name, c.color)),
+  channelShortcuts("master", "Master", "var(--master)"),
+  { title: "Mic", color: "var(--mic)", actions: [
+    ["mic.mute", "Mute on/off"],
+    ["mic.push_to_talk", "Push to talk (hold)"],
+    ["mic.push_to_mute", "Push to mute (hold)"],
+    ["mic.gain_up", "Gain up 1 dB"],
+    ["mic.gain_down", "Gain down 1 dB"],
+    ["mic.monitor", "Listen to yourself on/off"],
+    ["mic.denoise", "Noise removal on/off"],
+    ["mic.low_latency", "Low-latency noise model on/off"],
+    ["mic.gate", "Noise gate on/off"],
+    ["mic.eq", "EQ on/off"],
+    ["mic.compressor", "Compressor on/off"],
+  ] },
+];
+const shortcutLabel = (action) => {
+  for (const g of SHORTCUT_GROUPS) for (const [id, label] of g.actions) if (id === action) return g.title === "General" ? label : `${g.title}: ${label}`;
+  return action;
+};
+
+// KeyboardEvent.code -> what's printed on the key. Codes not listed show as-is (F13, Pause…).
+const KEY_NAMES = {
+  Backquote: "`", Minus: "-", Equal: "=", BracketLeft: "[", BracketRight: "]", Backslash: "\\", Semicolon: ";", Quote: "'",
+  Comma: ",", Period: ".", Slash: "/", ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→", PageUp: "Page Up",
+  PageDown: "Page Down", PrintScreen: "Print Screen", ScrollLock: "Scroll Lock", NumLock: "Num Lock", CapsLock: "Caps Lock",
+  NumpadAdd: "Num +", NumpadSubtract: "Num −", NumpadMultiply: "Num *", NumpadDivide: "Num /", NumpadDecimal: "Num .",
+  NumpadEnter: "Num Enter", NumpadEqual: "Num =", AudioVolumeUp: "Volume Up", AudioVolumeDown: "Volume Down",
+  AudioVolumeMute: "Volume Mute", MediaPlayPause: "Play/Pause", MediaStop: "Media Stop", MediaTrackNext: "Next Track",
+  MediaTrackPrevious: "Previous Track", Super: "Win",
+};
+const keyName = (part) => KEY_NAMES[part] ?? part.replace(/^Key|^Digit/, "").replace(/^Numpad(\d)$/, "Num $1");
+// Keys the shortcut library can register (global-hotkey's parser).
+const SUPPORTED_KEY = /^(Key[A-Z]|Digit\d|F([1-9]|1\d|2[0-4])|Numpad(\d|Add|Subtract|Multiply|Divide|Decimal|Enter|Equal)|Arrow(Up|Down|Left|Right)|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash|Space|Tab|Enter|Backspace|Delete|Insert|Home|End|PageUp|PageDown|PrintScreen|ScrollLock|Pause|NumLock|CapsLock|AudioVolume(Up|Down|Mute)|Media(PlayPause|Stop|TrackNext|TrackPrevious))$/;
+// Keys that are fine on their own; anything else needs a modifier so typing keeps working.
+const BARE_OK = /^(F([1-9]|1\d|2[0-4])|Pause|ScrollLock|PrintScreen|AudioVolume\w+|Media\w+)$/;
+const MODIFIER_CODES = new Set(["ControlLeft", "ControlRight", "AltLeft", "AltRight", "ShiftLeft", "ShiftRight", "MetaLeft", "MetaRight", "OSLeft", "OSRight"]);
+
+let recording = null; // { action, button, note }
+
+function keycaps(keys) {
+  return keys.split("+").map((k) => h("kbd", {}, keyName(k)));
+}
+
+function shortcutsPane() {
+  const cfg = snap.config;
+  const steps = [0.01, 0.02, 0.05, 0.1];
+  const step = h("div", { class: "seg", role: "group", "aria-label": "Volume step" }, ...steps.map((s) => {
+    const b = h("button", { type: "button", "aria-pressed": String(Math.abs(cfg.volume_step - s) < 0.001) }, `${Math.round(s * 100)} %`);
+    b.addEventListener("click", () => {
+      cfg.volume_step = s;
+      step.querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+      invoke("set_volume_step", { step: s }).catch(showError);
+    });
+    return b;
+  }));
+
+  const groups = SHORTCUT_GROUPS.map((g) => h("div", { class: "keygroup" },
+    g.color ? tape(g.title, g.color) : h("h4", {}, g.title),
+    ...g.actions.map(([action, label]) => {
+      const keys = cfg.hotkeys[action];
+      const error = snap.hotkey_errors[action];
+      const button = h("button", { type: "button", class: "keybind" + (keys ? "" : " empty"), "aria-label": `${label}: ${keys ? keys.replaceAll("+", " ") : "not set"}. Change shortcut` },
+        ...(keys ? keycaps(keys) : ["Set"]));
+      const note = h("span", { class: "keynote" + (error ? " bad" : "") }, error ?? "");
+      button.addEventListener("click", () => startRecording(action, button, note));
+      const clear = keys ? h("button", { type: "button", class: "iconbtn keyclear", title: "Remove shortcut", "aria-label": `Remove shortcut for ${label}` }, "×") : null;
+      clear?.addEventListener("click", () => saveShortcut(action, null));
+      return h("div", { class: "keyrow" }, h("span", { class: "keylabel" }, label), button, clear ?? h("span"), note);
+    })));
+
+  return h("section", { class: "pane shortcuts" },
+    h("h3", {}, "Keyboard shortcuts"),
+    h("p", { class: "hint" }, "Work anywhere in Windows, even while a game has focus. Click a shortcut, then press the keys. Esc cancels, Backspace removes it."),
+    h("label", { class: "field inline" }, h("span", {}, "Volume up/down step"), step),
+    h("div", { class: "keygroups" }, ...groups));
+}
+
+function startRecording(action, button, note) {
+  if (recording) {
+    // Switching to another shortcut: shortcuts stay paused, just put the old button back.
+    recording.button.classList.remove("recording");
+    recording.button.replaceChildren(...recording.original);
+  } else {
+    // Bound shortcuts would otherwise fire instead of reaching this page.
+    invoke("pause_hotkeys", { paused: true }).catch(() => {});
+  }
+  recording = { action, button, note, original: [...button.childNodes] };
+  button.classList.add("recording");
+  button.replaceChildren("Press keys…");
+  note.textContent = "";
+  note.classList.remove("bad");
+}
+
+async function stopRecording() {
+  if (!recording) return;
+  recording = null;
+  snap.hotkey_errors = await invoke("pause_hotkeys", { paused: false }).catch(() => snap.hotkey_errors);
+  renderSettings();
+}
+
+async function saveShortcut(action, keys) {
+  recording = null;
+  const previous = keys && Object.entries(snap.config.hotkeys).find(([a, k]) => k === keys && a !== action);
+  try {
+    snap.hotkey_errors = await invoke("set_hotkey", { action, keys });
+    if (keys) {
+      for (const [a, k] of Object.entries(snap.config.hotkeys)) if (k === keys) delete snap.config.hotkeys[a];
+      snap.config.hotkeys[action] = keys;
+    } else {
+      delete snap.config.hotkeys[action];
+    }
+    renderSettings();
+    if (previous) toast(`Moved from “${shortcutLabel(previous[0])}”`);
+  } catch (e) { showError(e); renderSettings(); }
+}
+
+document.addEventListener("keydown", (e) => {
+  if (!recording) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const { action, button, note } = recording;
+  const mods = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Super"].filter(Boolean);
+  if (MODIFIER_CODES.has(e.code)) {
+    button.replaceChildren(...keycaps(mods.join("+")), "…");
+    return;
+  }
+  if (!mods.length && e.code === "Escape") return stopRecording();
+  if (!mods.length && (e.code === "Backspace" || e.code === "Delete")) return saveShortcut(action, null);
+  if (!SUPPORTED_KEY.test(e.code)) { note.textContent = "That key can't be used for a shortcut"; return; }
+  if (!mods.length && !BARE_OK.test(e.code)) { note.textContent = "Add Ctrl, Alt, Shift or Win to this key"; return; }
+  saveShortcut(action, [...mods, e.code].join("+"));
+}, true);
+// Clicking elsewhere or leaving the window cancels recording.
+window.addEventListener("blur", () => stopRecording());
+document.addEventListener("pointerdown", (e) => { if (recording && !e.target.closest(".keybind")) stopRecording(); }, true);
 
 function renderStatus() {
   const entries = Object.entries(snap.status).sort(([a], [b]) => a.localeCompare(b));
@@ -792,6 +948,8 @@ setInterval(async () => {
 // Settings changed in the tray flyout while this window was in the background.
 window.addEventListener("focus", () => { if (snap && !document.querySelector(".fader:active")) loadState().catch(showError); });
 listen("show-view", (e) => setView(e.payload));
+// A shortcut or the tray flyout changed settings.
+listen("config-changed", () => { if (!recording) loadState().catch(showError); });
 
 (async () => {
   try {

@@ -1,4 +1,4 @@
-//! Persistent settings in %APPDATA%\AudioManager\config.json.
+//! Persistent settings in %APPDATA%\Smowaudio\config.json.
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
@@ -56,8 +56,13 @@ pub struct Config {
     pub launch_at_login: bool,
     /// Like Sonar: make Game / Chat / Virtual Mic the Windows default devices.
     pub set_windows_defaults: bool,
-    /// The user's own defaults from before AudioManager changed them, restored when turned off.
+    /// The user's own defaults from before Smowaudio changed them, restored when turned off.
     pub previous_defaults: Option<WindowsDefaults>,
+    /// Global keyboard shortcuts: action id (see hotkeys.rs) -> key combination such as
+    /// "Ctrl+Alt+KeyM". Empty by default; the user binds them in Settings.
+    pub hotkeys: BTreeMap<String, String>,
+    /// How much the volume up/down shortcuts change a channel (0.05 = 5 %).
+    pub volume_step: f32,
 }
 
 impl Default for Config {
@@ -74,6 +79,8 @@ impl Default for Config {
             launch_at_login: false,
             set_windows_defaults: true,
             previous_defaults: None,
+            hotkeys: BTreeMap::new(),
+            volume_step: 0.05,
         }
     }
 }
@@ -81,7 +88,16 @@ impl Default for Config {
 impl Config {
     fn path() -> PathBuf {
         let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-        base.join("AudioManager").join("config.json")
+        let path = base.join("Smowaudio").join("config.json");
+        // The app used to be called AudioManager: carry its settings over once.
+        let legacy = base.join("AudioManager").join("config.json");
+        if !path.exists() && legacy.exists() {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::copy(&legacy, &path);
+        }
+        path
     }
 
     pub fn load() -> Self {
@@ -139,7 +155,7 @@ impl Config {
         }
     }
 
-    /// The user's own Windows default from before AudioManager made the cables default. Used as
+    /// The user's own Windows default from before Smowaudio made the cables default. Used as
     /// the physical device when none is picked explicitly, since the Windows default is now a cable.
     pub fn previous_default(&self, flow: Flow) -> Option<String> {
         let saved = self.previous_defaults.as_ref()?;

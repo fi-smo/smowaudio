@@ -29,9 +29,44 @@ function send(key, fn) {
   setTimeout(() => { const f = pending.get(key); pending.delete(key); f().catch(() => {}); }, 40);
 }
 
+// Same list as the main window: cables and other apps' virtual devices can't be the output.
+const VIRTUAL_HARDWARE = ["VB-Audio", "SteelSeries Sonar", "Elgato Virtual Audio", "Voicemeeter", "VoiceMeeter"];
+const shortName = (name) => name.replace(/\s*\(.*\)$/, "");
+
+// An in-page list rather than a <select>: a native dropdown takes focus from the window,
+// which would hide the flyout mid-choice.
+function renderOutputs() {
+  const devices = snap.render_devices.filter((d) => !VIRTUAL_HARDWARE.some((v) => d.hardware.includes(v)));
+  const current = snap.config.output_device;
+  const selected = devices.find((d) => d.id === current);
+  $("#fly-output").textContent = selected ? shortName(selected.name) : "Automatic";
+  const option = (id, label, title) => {
+    const b = h("button", { type: "button", role: "option", "aria-selected": String(id === current), title }, h("span", {}, label));
+    b.addEventListener("click", () => chooseOutput(id));
+    return b;
+  };
+  $("#fly-output-list").replaceChildren(
+    option(null, "Automatic", "Your usual default headphones or speakers"),
+    ...devices.map((d) => option(d.id, shortName(d.name), d.name)));
+}
+
+function toggleOutputs(open) {
+  $("#fly-output-list").hidden = !open;
+  $("#fly-output-btn").setAttribute("aria-expanded", String(open));
+  if (open) $("#fly-output-list [aria-selected='true']")?.focus();
+}
+
+async function chooseOutput(id) {
+  toggleOutputs(false);
+  if (id === snap.config.output_device) return;
+  snap.config.output_device = id;
+  renderOutputs();
+  try { await invoke("set_output_device", { output: id }); } catch { await load(); }
+}
+$("#fly-output-btn").addEventListener("click", () => toggleOutputs($("#fly-output-list").hidden));
+
 function render() {
-  const output = snap.render_devices.find((d) => d.id === snap.config.output_device);
-  $("#fly-output").textContent = output ? output.name.replace(/\s*\(.*\)$/, "") : "Automatic";
+  renderOutputs();
   const bad = Object.values(snap.status).filter((v) => v !== "running").length;
   $("#fly-status").classList.toggle("warn", bad > 0);
   $("#fly-status").title = bad ? `${bad} stream${bad > 1 ? "s" : ""} need attention` : "All streams running";
@@ -72,7 +107,13 @@ $("#fly-listen").addEventListener("change", (e) => {
 document.querySelectorAll("[data-open]").forEach((b) =>
   b.addEventListener("click", () => invoke("open_main_window", { view: b.dataset.open })));
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") window.__TAURI__.window.getCurrentWindow().hide();
+  if (e.key !== "Escape") return;
+  if (!$("#fly-output-list").hidden) {
+    toggleOutputs(false);
+    $("#fly-output-btn").focus();
+  } else {
+    window.__TAURI__.window.getCurrentWindow().hide();
+  }
 });
 
 async function load() {
@@ -103,7 +144,9 @@ new ResizeObserver(() => {
 }).observe($(".flyout"));
 
 // Volumes may have changed in the main window since the flyout was last open.
-listen("flyout-shown", () => load().catch(() => {}));
+listen("flyout-shown", () => { toggleOutputs(false); load().catch(() => {}); });
+// A shortcut or the main window changed something.
+listen("config-changed", () => load().catch(() => {}));
 window.addEventListener("focus", () => load().catch(() => {}));
 load().catch(() => {});
 pollMeters();

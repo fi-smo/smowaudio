@@ -1,5 +1,5 @@
 [package]
-name = "audiomanager"
+name = "smowaudio"
 version = "0.1.0"
 edition = "2021"
 description = "Lightweight audio mixer with virtual mic processing"
@@ -23,6 +23,7 @@ deep_filter = { path = "../vendor/DeepFilterNet/libDF", default-features = false
 
 # The #[interface] macro expands to `::windows_core` paths.
 windows-core = "0.62"
+tauri-plugin-global-shortcut = "2"
 
 [dependencies.windows]
 version = "0.62"

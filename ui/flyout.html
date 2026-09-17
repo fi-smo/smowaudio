@@ -3,18 +3,24 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AudioManager</title>
+  <title>Smowaudio</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body class="flyout-body">
   <div class="flyout">
     <div class="fly-head">
       <span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-      <b>AudioManager</b>
+      <b>Smowaudio</b>
       <span class="spacer"></span>
       <span class="dot" id="fly-status" title="All streams running"></span>
     </div>
-    <div class="fly-dev"><span>Output</span><b id="fly-output">…</b></div>
+    <div class="fly-dev">
+      <button type="button" class="fly-dev-btn" id="fly-output-btn" aria-expanded="false" aria-controls="fly-output-list">
+        <span>Output</span><b id="fly-output">…</b>
+        <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5"/></svg>
+      </button>
+      <div class="fly-dev-list" id="fly-output-list" role="listbox" aria-label="Output device" hidden></div>
+    </div>
     <div class="fly-rows" id="fly-rows"></div>
     <div class="fly-mic">
       <span class="tape">Mic</span>

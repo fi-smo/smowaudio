@@ -4,8 +4,10 @@ mod audio;
 mod config;
 mod dsp;
 mod engine;
+mod hotkeys;
 mod icons;
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -33,6 +35,10 @@ struct AppState {
     pending_view: Mutex<Option<String>>,
     /// When the flyout last hid itself on losing focus, so the same tray click doesn't reopen it.
     flyout_hidden_at: Mutex<Option<Instant>>,
+    /// Shortcuts Windows refused to register, by action id (shown next to them in Settings).
+    hotkey_errors: Mutex<BTreeMap<String, String>>,
+    /// Devices the streams were last set up for; the device watcher restarts them when it changes.
+    device_fingerprint: Mutex<String>,
 }
 
 impl AppState {
@@ -44,6 +50,37 @@ impl AppState {
         config.clone()
     }
 
+    fn set_channel_settings(&self, index: usize, settings: ChannelSettings) {
+        self.update(|c| c.channels[index].settings = settings.clone());
+        if let Some(e) = self.engine.lock().as_ref() {
+            e.set_channel(index, settings);
+        }
+    }
+
+    fn set_master_settings(&self, settings: ChannelSettings) {
+        self.update(|c| c.master = settings.clone());
+        if let Some(e) = self.engine.lock().as_ref() {
+            e.set_master(settings);
+        }
+    }
+
+    fn set_mic_settings(&self, settings: MicSettings) {
+        self.update(|c| c.mic = settings.clone());
+        if let Some(e) = self.engine.lock().as_ref() {
+            e.set_mic(settings);
+        }
+    }
+
+    /// Switches headphones/speakers right away, reopening only the output stream. Needs COM.
+    fn set_output(&self, output: Option<String>) {
+        let config = self.update(|c| c.output_device = output.clone());
+        if let Some(e) = self.engine.lock().as_ref() {
+            e.set_output(output);
+        }
+        // Not a device change: keep the watcher from restarting every stream over it.
+        *self.device_fingerprint.lock() = config.device_fingerprint();
+    }
+
     fn restart_engine(&self) {
         let config = self.config.lock().clone();
         let mut engine = self.engine.lock();
@@ -51,6 +88,8 @@ impl AppState {
             old.stop();
         }
         *engine = Some(Engine::start(&config));
+        drop(engine);
+        *self.device_fingerprint.lock() = config.device_fingerprint();
     }
 }
 
@@ -66,6 +105,7 @@ struct Snapshot {
     render_devices: Vec<DeviceInfo>,
     capture_devices: Vec<DeviceInfo>,
     status: std::collections::HashMap<String, String>,
+    hotkey_errors: BTreeMap<String, String>,
 }
 
 #[tauri::command]
@@ -77,6 +117,7 @@ fn get_state(state: State<AppState>) -> CmdResult<Snapshot> {
         render_devices: device::list(Flow::Render).map_err(err)?,
         capture_devices: device::list(Flow::Capture).map_err(err)?,
         status,
+        hotkey_errors: state.hotkey_errors.lock().clone(),
     })
 }
 
@@ -87,10 +128,7 @@ fn get_meters(state: State<AppState>) -> Meters {
 
 #[tauri::command]
 fn set_master(state: State<AppState>, settings: ChannelSettings) {
-    state.update(|c| c.master = settings.clone());
-    if let Some(e) = state.engine.lock().as_ref() {
-        e.set_master(settings);
-    }
+    state.set_master_settings(settings);
 }
 
 /// Async on purpose: creating a window from a synchronous command can deadlock WebView2 on
@@ -108,10 +146,7 @@ fn take_pending_view(state: State<AppState>) -> Option<String> {
 
 #[tauri::command]
 fn set_mic(state: State<AppState>, settings: MicSettings) {
-    state.update(|c| c.mic = settings.clone());
-    if let Some(e) = state.engine.lock().as_ref() {
-        e.set_mic(settings);
-    }
+    state.set_mic_settings(settings);
 }
 
 #[tauri::command]
@@ -119,11 +154,48 @@ fn set_channel(state: State<AppState>, index: usize, settings: ChannelSettings) 
     if index >= config::CHANNEL_COUNT {
         return Err("invalid channel".into());
     }
-    state.update(|c| c.channels[index].settings = settings.clone());
-    if let Some(e) = state.engine.lock().as_ref() {
-        e.set_channel(index, settings);
-    }
+    state.set_channel_settings(index, settings);
     Ok(())
+}
+
+/// Switches headphones/speakers from the tray flyout without restarting the other streams.
+#[tauri::command]
+async fn set_output_device(app: AppHandle, output: Option<String>) {
+    let _com = audio::ComGuard::new();
+    app.state::<AppState>().set_output(output);
+    let _ = app.emit("config-changed", ());
+}
+
+/// Binds (or with `None` unbinds) a global shortcut and re-registers them all. A combination
+/// moves over from any action that had it. Returns the shortcuts Windows refused, by action id.
+#[tauri::command]
+async fn set_hotkey(app: AppHandle, action: String, keys: Option<String>) -> BTreeMap<String, String> {
+    app.state::<AppState>().update(|c| match keys {
+        Some(keys) => {
+            c.hotkeys.retain(|_, bound| *bound != keys);
+            c.hotkeys.insert(action, keys);
+        }
+        None => {
+            c.hotkeys.remove(&action);
+        }
+    });
+    hotkeys::register_all(&app)
+}
+
+/// Suspends shortcuts while Settings records a key combination, then restores them.
+#[tauri::command]
+async fn pause_hotkeys(app: AppHandle, paused: bool) -> BTreeMap<String, String> {
+    if paused {
+        hotkeys::unregister_all(&app);
+        BTreeMap::new()
+    } else {
+        hotkeys::register_all(&app)
+    }
+}
+
+#[tauri::command]
+fn set_volume_step(state: State<AppState>, step: f32) {
+    state.update(|c| c.volume_step = step.clamp(0.01, 0.25));
 }
 
 #[tauri::command]
@@ -174,6 +246,11 @@ fn apply_windows_defaults(config: &mut Config) -> bool {
 #[tauri::command]
 fn set_windows_defaults(state: State<AppState>, enabled: bool) -> CmdResult<()> {
     let _com = audio::ComGuard::new();
+    set_windows_defaults_enabled(&state, enabled)
+}
+
+/// Turns Sonar-style Windows defaults on, or off by restoring the user's own. Needs COM.
+fn set_windows_defaults_enabled(state: &AppState, enabled: bool) -> CmdResult<()> {
     {
         let mut config = state.config.lock();
         config.set_windows_defaults = enabled;
@@ -181,7 +258,7 @@ fn set_windows_defaults(state: State<AppState>, enabled: bool) -> CmdResult<()> 
             apply_windows_defaults(&mut config);
         } else if let Some(previous) = config.previous_defaults.take() {
             previous.apply().map_err(err)?;
-            append_log("restored the Windows default devices from before AudioManager");
+            append_log("restored the Windows default devices from before Smowaudio");
         }
     }
     state.dirty.store(true, Ordering::Relaxed);
@@ -223,7 +300,7 @@ fn assign_app(state: State<AppState>, pid: u32, exe: String, channel: Option<usi
     Ok(())
 }
 
-/// Starts AudioManager in the tray at sign-in through a Task Scheduler task. Task Scheduler
+/// Starts Smowaudio in the tray at sign-in through a Task Scheduler task. Task Scheduler
 /// launches immediately at logon, while Explorer's Run-key startup can skip entries entirely.
 #[tauri::command]
 fn set_launch_at_login(state: State<AppState>, enabled: bool) -> CmdResult<()> {
@@ -235,12 +312,14 @@ $action = New-ScheduledTaskAction -Execute '{exe}' -Argument '--background'
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -Priority 4 -StartWhenAvailable
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
-Register-ScheduledTask -TaskName 'AudioManager' -Description 'Starts AudioManager in the tray at sign-in' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force -ErrorAction Stop | Out-Null"#
+Register-ScheduledTask -TaskName 'Smowaudio' -Description 'Starts Smowaudio in the tray at sign-in' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force -ErrorAction Stop | Out-Null"#
         )
     } else {
-        "Unregister-ScheduledTask -TaskName 'AudioManager' -Confirm:$false -ErrorAction SilentlyContinue".to_string()
+        "Unregister-ScheduledTask -TaskName 'Smowaudio' -Confirm:$false -ErrorAction SilentlyContinue".to_string()
     };
     run_powershell(&script)?;
+    // The app used to be called AudioManager; its task would start an exe that no longer exists.
+    let _ = run_powershell("Unregister-ScheduledTask -TaskName 'AudioManager' -Confirm:$false -ErrorAction SilentlyContinue");
     remove_legacy_run_entry();
     state.update(|c| c.launch_at_login = enabled);
     Ok(())
@@ -271,13 +350,13 @@ fn remove_legacy_run_entry() {
     }
 }
 
-/// True if another AudioManager process already holds the instance mutex.
+/// True if another Smowaudio process already holds the instance mutex.
 /// The handle is intentionally leaked so the mutex lives as long as this process.
 fn another_instance_running() -> bool {
     use windows::core::w;
     use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
     use windows::Win32::System::Threading::CreateMutexW;
-    unsafe { CreateMutexW(None, false, w!("Local\\AudioManager.SingleInstance")).is_ok() && GetLastError() == ERROR_ALREADY_EXISTS }
+    unsafe { CreateMutexW(None, false, w!("Local\\Smowaudio.SingleInstance")).is_ok() && GetLastError() == ERROR_ALREADY_EXISTS }
 }
 
 fn open_window(app: &AppHandle) {
@@ -313,8 +392,8 @@ fn show_main(app: &AppHandle, view: Option<&str>) {
     }
     *app.state::<AppState>().pending_view.lock() = view.map(str::to_string);
     // Created on demand and destroyed on close, so WebView2 only uses memory while visible.
-    let _ = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-        .title("AudioManager")
+    let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+        .title("Smowaudio")
         .inner_size(1180.0, 760.0)
         .min_inner_size(440.0, 520.0)
         // The page's own background, so the window doesn't flash white while WebView2 starts.
@@ -322,6 +401,30 @@ fn show_main(app: &AppHandle, view: Option<&str>) {
         // Tauri's file-drop handler swallows HTML drag and drop on Windows; the Apps view needs it.
         .disable_drag_drop_handler()
         .build();
+    if let Ok(window) = window {
+        let handle = app.clone();
+        window.on_window_event(move |event| {
+            // Closing the window while Settings records a shortcut would leave them all suspended.
+            // Registering waits for the UI thread, which is the one running this handler.
+            if let tauri::WindowEvent::Destroyed = event {
+                let handle = handle.clone();
+                std::thread::spawn(move || {
+                    hotkeys::register_all(&handle);
+                });
+            }
+        });
+    }
+}
+
+/// Toggles the flyout above the tray icon, for the shortcut (there's no click to place it by).
+fn toggle_flyout_at_tray(app: &AppHandle) {
+    let anchor = app.tray_by_id("tray").and_then(|tray| tray.rect().ok().flatten()).map(|rect| {
+        let position = rect.position.to_physical::<f64>(1.0);
+        let size = rect.size.to_physical::<f64>(1.0);
+        PhysicalPosition::new(position.x + size.width / 2.0, position.y)
+    });
+    let anchor = anchor.or_else(|| app.cursor_position().ok()).unwrap_or_default();
+    toggle_flyout(app, anchor);
 }
 
 /// Starting size; the flyout page reports its real content height through `fit_flyout`.
@@ -359,7 +462,7 @@ fn toggle_flyout(app: &AppHandle, click: PhysicalPosition<f64>) {
         Some(window) => window,
         None => {
             let Ok(window) = WebviewWindowBuilder::new(app, "flyout", WebviewUrl::App("flyout.html".into()))
-                .title("AudioManager")
+                .title("Smowaudio")
                 .inner_size(FLYOUT_SIZE.0, FLYOUT_SIZE.1)
                 .decorations(false)
                 .resizable(false)
@@ -412,16 +515,16 @@ fn place_flyout(window: &WebviewWindow, click: PhysicalPosition<f64>) {
     let _ = window.set_position(position);
 }
 
-/// Appends a timestamped line to %APPDATA%\AudioManager\audiomanager.log. The release build has
+/// Appends a timestamped line to %APPDATA%\Smowaudio\smowaudio.log. The release build has
 /// no console, so this is where stream errors and panics leave a trace.
 pub(crate) fn append_log(message: &str) {
     use std::io::Write;
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let Some(dir) = std::env::var_os("APPDATA").map(|d| std::path::PathBuf::from(d).join("AudioManager")) else {
+    let Some(dir) = std::env::var_os("APPDATA").map(|d| std::path::PathBuf::from(d).join("Smowaudio")) else {
         return;
     };
     let _ = std::fs::create_dir_all(&dir);
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("audiomanager.log")) {
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("smowaudio.log")) {
         // One write per line so lines from different threads don't interleave.
         let _ = file.write_all(format!("[unix {secs}] {message}\n").as_bytes());
     }
@@ -464,10 +567,13 @@ fn main() {
         dirty: dirty.clone(),
         pending_view: Mutex::new(None),
         flyout_hidden_at: Mutex::new(None),
+        hotkey_errors: Mutex::new(BTreeMap::new()),
+        device_fingerprint: Mutex::new(String::new()),
     };
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| open_window(app)))
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             get_state,
@@ -483,16 +589,20 @@ fn main() {
             set_master,
             open_main_window,
             fit_flyout,
+            set_output_device,
+            set_hotkey,
+            pause_hotkeys,
+            set_volume_step,
             take_pending_view
         ])
         .setup(move |app| {
-            let open = MenuItem::with_id(app, "open", "Open AudioManager", true, None::<&str>)?;
+            let open = MenuItem::with_id(app, "open", "Open Smowaudio", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &quit])?;
             TrayIconBuilder::with_id("tray")
                 // Bars without the app icon's tile, so they read at tray size on light and dark taskbars.
                 .icon(tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?)
-                .tooltip("AudioManager")
+                .tooltip("Smowaudio")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
@@ -510,21 +620,26 @@ fn main() {
                 })
                 .build(app)?;
 
+            hotkeys::start(app.handle());
+
             // Restart streams when the devices they depend on change (headset plugged in, mic
             // turned on, Windows default changed while following it).
             let watcher_handle = app.handle().clone();
             std::thread::spawn(move || {
                 let _com = audio::ComGuard::new();
-                let mut last = watcher_handle.state::<AppState>().config.lock().device_fingerprint();
+                {
+                    let state = watcher_handle.state::<AppState>();
+                    let now = state.config.lock().device_fingerprint();
+                    *state.device_fingerprint.lock() = now;
+                }
                 let result = audio::notify::watch(
                     || true,
                     || {
                         let state = watcher_handle.state::<AppState>();
                         let now = state.config.lock().device_fingerprint();
-                        if now != last {
+                        if now != *state.device_fingerprint.lock() {
                             append_log(&format!("audio devices changed ({now}); restarting streams"));
                             state.restart_engine();
-                            last = now;
                         }
                     },
                 );

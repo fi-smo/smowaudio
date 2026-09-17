@@ -1,4 +1,4 @@
-# AudioManager
+# Smowaudio
 
 A lightweight replacement for SteelSeries Sonar / Elgato Wave Link / Voicemeeter on Windows 11.
 
@@ -20,11 +20,11 @@ A lightweight replacement for SteelSeries Sonar / Elgato Wave Link / Voicemeeter
    4096 at 96 kHz (VB-CABLE and the A+B pack don't offer 2048 at 48 kHz). Smaller than the ~31 ms chunks the
    cables deliver in causes crackling; larger just adds delay.
 
-   Reboot afterwards. AudioManager auto-detects the cables on first launch; you can change the mapping in **Settings**.
+   Reboot afterwards. Smowaudio auto-detects the cables on first launch; you can change the mapping in **Settings**.
 2. *(Optional)* Rename the endpoints in Windows Sound settings, e.g. `CABLE-A Input` → `Game`, and `CABLE-C Output` → `Virtual Mic`.
    Matching uses the hardware name in parentheses, so renaming doesn't break anything.
 3. In Windows Sound settings set **CABLE Input** (System) as the default output device. Everything not assigned to Game/Media
-   then flows through AudioManager. Your headphones are selected in AudioManager's Settings tab, not as the Windows default.
+   then flows through Smowaudio. Your headphones are selected in Smowaudio's Settings tab, not as the Windows default.
 4. In Discord/OBS/etc. pick **CABLE-C Output** (your Virtual Mic) as the microphone, and turn off their own noise suppression
    (Krisp, echo cancellation, auto gain) so the audio isn't processed twice.
 5. Quit Sonar and Wave Link (or disable their startup). They grab default devices and will fight over routing.
@@ -40,7 +40,7 @@ npm run build    # optimized installer in src-tauri/target/release/bundle/nsis
 ```
 
 Run the built exe with `--background` to start straight into the tray. The "Launch at Windows sign-in" toggle
-registers a Task Scheduler task (`AudioManager`, runs at your logon, no elevation needed) that does this for you.
+registers a Task Scheduler task (`Smowaudio`, runs at your logon, no elevation needed) that does this for you.
 Launching the exe while it's already running just opens the existing window.
 
 ```bash
@@ -64,7 +64,7 @@ by leaving it on "Default" in the Apps tab and setting the headphones as the Win
 src-tauri/src/
   main.rs            tray, window, commands exposed to the UI
   engine.rs          supervised audio threads, settings hand-off, meters
-  config.rs          %APPDATA%\AudioManager\config.json, cable auto-detection
+  config.rs          %APPDATA%\Smowaudio\config.json, cable auto-detection
   audio/device.rs    endpoint enumeration
   audio/stream.rs    event-driven WASAPI capture/render (48 kHz float)
   audio/resample.rs  lock-free ring buffer + drift-compensating sinc resampler

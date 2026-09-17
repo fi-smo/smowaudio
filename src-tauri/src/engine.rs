@@ -77,6 +77,10 @@ pub struct Shared {
     mic_starved: AtomicU64,
     /// "Listen to my mic": mix the processed mic into the headphone output.
     monitor: AtomicBool,
+    /// Headphones/speakers to play to (None follows the usual default). Bumping the generation
+    /// makes the output stream reopen on it without touching the other streams.
+    output_device: Mutex<Option<String>>,
+    output_generation: AtomicU64,
     pub meters: Mutex<Meters>,
     pub status: Mutex<HashMap<String, String>>,
 }
@@ -101,6 +105,8 @@ impl Engine {
             output_starved: AtomicU64::new(0),
             mic_starved: AtomicU64::new(0),
             monitor: AtomicBool::new(config.mic.monitor),
+            output_device: Mutex::new(config.output_device.clone()),
+            output_generation: AtomicU64::new(0),
             meters: Mutex::new(Meters::default()),
             status: Mutex::new(HashMap::new()),
         });
@@ -136,6 +142,12 @@ impl Engine {
 
     pub fn set_master(&self, settings: ChannelSettings) {
         self.shared.master.set(settings);
+    }
+
+    /// Switches the headphones/speakers output live; only the output stream restarts.
+    pub fn set_output(&self, output: Option<String>) {
+        *self.shared.output_device.lock() = output;
+        self.shared.output_generation.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn set_rules(&self, rules: BTreeMap<String, String>) {
@@ -262,7 +274,6 @@ impl Engine {
         }
 
         let shared = self.shared.clone();
-        let output_id = config.output_device.clone();
         let preferred_output = config.previous_default(Flow::Render);
         let mut chains: Vec<ChannelChain> = config.channels.iter().map(|c| ChannelChain::new(c.settings.clone())).collect();
         let mut seen = [u64::MAX; CHANNEL_COUNT];
@@ -274,13 +285,16 @@ impl Engine {
         let mut last_output = String::new();
         self.supervise("Output", move |stop| {
             stream::phase("find device");
+            let generation = shared.output_generation.load(Ordering::Relaxed);
+            let output_id = shared.output_device.lock().clone();
             let device = device::resolve_physical(Flow::Render, output_id.as_deref(), preferred_output.as_deref())?;
             let device_name = device::friendly_name(&device).unwrap_or_default();
             if device_name != last_output {
                 crate::append_log(&format!("Output playing to {device_name}"));
                 last_output = device_name;
             }
-            let keep_going = || !stop.load(Ordering::Relaxed);
+            let keep_going =
+                || !stop.load(Ordering::Relaxed) && shared.output_generation.load(Ordering::Relaxed) == generation;
             stream::run_render_while(&device, 2, keep_going, Some(&shared.output_starved), |out| {
                 out.fill(0.0);
                 if scratch.len() < out.len() {
@@ -510,9 +524,9 @@ mod tests {
 
     /// Measures the delay the engine itself adds: bursts -> Cable A -> engine (Game channel) -> Cable D.
     /// Each cable's own delay is measured first and subtracted. Plays ticks into cables A and D,
-    /// so run it with AudioManager closed.
+    /// so run it with Smowaudio closed.
     #[test]
-    #[ignore = "measures real latency through VB-Audio cables A and D; close AudioManager and run with --ignored"]
+    #[ignore = "measures real latency through VB-Audio cables A and D; close Smowaudio and run with --ignored"]
     fn measure_engine_latency() {
         let _com = ComGuard::new();
         let (a_in, a_out) = (cable(Flow::Render, "VB-Audio Cable A"), cable(Flow::Capture, "VB-Audio Cable A"));
