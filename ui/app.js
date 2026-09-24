@@ -1088,7 +1088,7 @@ function updatesTab() {
       h("p", { class: "update-notes", id: "update-notes", hidden: true })));
   const access = h("section", { class: "card" },
     h("div", { class: "card-head" }, h("h3", {}, "GitHub access"),
-      h("p", {}, "Updates come from a private repo, so Smowaudio needs a read-only token. It's kept in Windows Credential Manager, not the config file.")),
+      h("p", {}, "Updates come from the public fi-smo/smowaudio repo, so no token is needed. Add one only if the repo is ever made private; it's kept in Windows Credential Manager, not the config file.")),
     h("div", { id: "token-area" }),
     tokenHowTo());
   return [version, access];
@@ -1104,7 +1104,7 @@ function tokenHowTo() {
       h("li", {}, "Repository access → ", h("b", {}, "Only select repositories"), " → smowaudio"),
       h("li", {}, "Repository permissions → ", h("b", {}, "Contents: Read-only")),
       h("li", {}, "Generate, copy, then paste it here with Replace")));
-  details.open = !updateStatus?.token_hint;
+  details.open = false;
   return details;
 }
 
@@ -1188,12 +1188,12 @@ function renderUpdates() {
   const [text, cls] = st.available ? [`Version ${st.available} is available`, "ok"]
     : st.error ? [st.error, "bad"]
     : st.checked ? [`You're up to date${st.checked_at ? ` · checked ${ago(st.checked_at)}` : ""}`, "ok"]
-    : [st.token_hint ? "Not checked yet" : "Add a GitHub token below to check for updates", ""];
+    : ["Not checked yet", ""];
   state.textContent = text;
   state.className = "srow-help" + (cls ? ` ${cls}` : "");
   $("#update-install").hidden = !st.available;
   $("#update-install").disabled = installing;
-  $("#update-check").disabled = installing || !st.token_hint;
+  $("#update-check").disabled = installing;
   const notes = $("#update-notes");
   notes.hidden = !(st.available && st.notes);
   notes.textContent = st.notes ?? "";

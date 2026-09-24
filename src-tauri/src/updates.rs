@@ -1,7 +1,8 @@
-//! Updates from the private GitHub repo. The release workflow builds a signed installer, attaches
+//! Updates from the public GitHub repo. The release workflow builds a signed installer, attaches
 //! it to a GitHub Release and writes `latest.json` (version, notes, signature, installer URL) to
 //! the `updates` branch. The app reads that file and downloads the installer through the GitHub
-//! API with the user's own read-only token; the updater checks the signature before installing.
+//! API; the updater checks the signature before installing. A saved token is sent along if there
+//! is one (only needed if the repo is ever private again).
 
 use std::time::Duration;
 
@@ -97,15 +98,17 @@ pub async fn check(app: &AppHandle) -> Result<Option<String>, String> {
 }
 
 async fn check_inner(app: &AppHandle) -> Result<Option<Update>, String> {
-    let token = crate::secrets::read_token().ok_or("Add a GitHub token first")?;
-    let auth = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| "The token has characters GitHub never uses")?;
+    let auth = match crate::secrets::read_token() {
+        Some(token) => Some(HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| "The token has characters GitHub never uses")?),
+        None => None,
+    };
     let endpoint: Url = format!("https://api.github.com/repos/{REPO}/contents/latest.json?ref=updates")
         .parse()
         .map_err(|e| format!("{e}"))?;
     let updater = app
         .updater_builder()
         .endpoints(vec![endpoint])
-        .and_then(|b| b.header(header::AUTHORIZATION, auth))
+        .and_then(|b| match auth { Some(auth) => b.header(header::AUTHORIZATION, auth), None => Ok(b) })
         // The raw file rather than GitHub's JSON description of it.
         .and_then(|b| b.header(header::ACCEPT, "application/vnd.github.raw+json"))
         .and_then(|b| b.header(header::USER_AGENT, "Smowaudio"))
@@ -168,16 +171,14 @@ pub async fn install(app: &AppHandle) -> Result<(), String> {
     })
 }
 
-/// Checks shortly after start, then every few hours, if a token is saved.
+/// Checks shortly after start, then every few hours.
 pub fn start_background_checks(app: &AppHandle) {
     let handle = app.clone();
     let _ = std::thread::Builder::new().name("Update checks".into()).spawn(move || {
         std::thread::sleep(Duration::from_secs(20));
         loop {
-            if crate::secrets::read_token().is_some() {
-                if let Err(e) = tauri::async_runtime::block_on(check(&handle)) {
-                    append_log(&format!("update check failed: {e}"));
-                }
+            if let Err(e) = tauri::async_runtime::block_on(check(&handle)) {
+                append_log(&format!("update check failed: {e}"));
             }
             std::thread::sleep(CHECK_EVERY);
         }
