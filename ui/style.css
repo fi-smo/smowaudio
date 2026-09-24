@@ -246,22 +246,20 @@ select.input {
 .appcard .title { grid-column: 2; grid-row: 1; }
 .appcard .sub { grid-column: 2; grid-row: 2; }
 .appcard .level { grid-column: 2; grid-row: 3; justify-self: end; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.appcard .level.silent { color: var(--faint); }
 .appcard .title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .appcard .sub { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--faint); font: 11px var(--font-num); }
 .appcard .sub em { font-style: normal; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Level meter down the card's right edge: the channel meters' segments, colours and peak mark. */
-.activity {
-  grid-column: 3; grid-row: 1 / span 3; align-self: stretch; width: 8px; position: relative; border-radius: 1px;
-  background: repeating-linear-gradient(to top, var(--seg-off) 0 3px, transparent 3px 5px);
-}
-.activity .lit {
-  position: absolute; inset: 0;
-  background: linear-gradient(to top, var(--ok) 0 70%, var(--warn) 70% 85%, var(--hot) 85% 100%);
-  -webkit-mask: repeating-linear-gradient(to top, #000 0 3px, transparent 3px 5px);
-          mask: repeating-linear-gradient(to top, #000 0 3px, transparent 3px 5px);
-  clip-path: inset(calc(100% - var(--lvl, 0%)) 0 0 0);
-}
-.activity .peak { position: absolute; left: 0; right: 0; height: 2px; bottom: var(--pk, 0%); background: var(--text); opacity: .75; }
+/* Level meter down the card's right edge: whole-pixel segments in the channel meters' colours. The
+   unlit ones use --well, which stands out from the card (--seg-off matches it in dark mode). */
+.activity { grid-column: 3; grid-row: 1 / span 3; align-self: stretch; width: 8px; position: relative; }
+.vsegs { position: absolute; inset: 0; display: flex; flex-direction: column-reverse; gap: 2px; }
+.vsegs i { flex: 1; min-height: 0; border-radius: 1px; background: var(--well); }
+.vsegs i.pk { background: var(--muted); }
+.vsegs.lit { clip-path: inset(calc(100% - var(--lvl, 0%)) 0 0 0); }
+.vsegs.lit i { background: var(--ok); }
+.vsegs.lit i.warn { background: var(--warn); }
+.vsegs.lit i.hot { background: var(--hot); }
 .appcard select { grid-row: 3; grid-column: 2; justify-self: start; margin-top: 2px; border: 1px solid var(--line); background: var(--panel); border-radius: 5px; padding: 1px 4px; font-size: 11px; color: var(--muted); }
 .badge { font: 600 10px/1 var(--font-ui); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 3px 5px; }
 

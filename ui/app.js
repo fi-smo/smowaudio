@@ -516,8 +516,8 @@ function appCard(app) {
   const card = h("div", { class: "appcard", draggable: "true", "data-exe": app.exe },
     appIcon(app, "icon"),
     h("span", { class: "title", title: app.name }, app.name),
-    h("span", { class: "activity", "data-activity": app.exe, "aria-hidden": "true" }, h("i", { class: "lit" }), h("i", { class: "peak" })),
-    h("span", { class: "level num", "data-level-db": app.exe }, "−∞"),
+    h("span", { class: "activity", "data-activity": app.exe, "aria-hidden": "true" }, appSegments(false), appSegments(true)),
+    h("span", { class: "level num silent", "data-level-db": app.exe }, "−∞"),
     h("span", { class: "sub" }, h("em", {}, app.exe), where.chosen ? null : h("span", { class: "badge" }, "Default")),
     select);
   card.addEventListener("dragstart", (e) => { dragExe = app.exe; e.dataTransfer.setData("text/plain", app.exe); card.classList.add("dragging"); });
@@ -529,6 +529,14 @@ const signature = () => apps.map((a) => `${a.exe}:${channelOf(a).index}:${channe
 function updateLanes() {
   if (dragExe || document.activeElement?.tagName === "SELECT") return;
   if (signature() !== laneSignature) { renderApps(); }
+}
+
+// Real segment elements (not a repeating gradient) so they stay even at any display scaling. The lit
+// copy is cut off at the level; the peak lights one segment of the dark copy underneath.
+const APP_SEGMENTS = 12;
+function appSegments(lit) {
+  return h("span", { class: lit ? "vsegs lit" : "vsegs" }, ...Array.from({ length: APP_SEGMENTS }, (_, k) =>
+    h("i", lit && k >= APP_SEGMENTS * 0.85 ? { class: "hot" } : lit && k >= APP_SEGMENTS * 0.7 ? { class: "warn" } : {})));
 }
 
 // Apps view meters: polled as often as the channel meters, with the same ballistics (instant rise,
@@ -550,10 +558,14 @@ async function pollAppLevels() {
         appMeter.set(a.exe, m);
         const bar = document.querySelector(`[data-activity="${CSS.escape(a.exe)}"]`);
         if (!bar) continue;
-        bar.style.setProperty("--lvl", `${meterPct(m.db)}%`);
-        bar.style.setProperty("--pk", `${meterPct(m.hold)}%`);
+        const lit = Math.round((meterPct(m.db) / 100) * APP_SEGMENTS);
+        bar.style.setProperty("--lvl", `${(lit / APP_SEGMENTS) * 100}%`);
+        // Peak mark: the highest segment reached recently, only while there's sound.
+        const peakSeg = Math.round((meterPct(m.hold) / 100) * APP_SEGMENTS) - 1;
+        bar.firstChild.querySelectorAll("i").forEach((seg, k) => seg.classList.toggle("pk", k === peakSeg));
+        const silent = m.hold <= -60;
         const readout = document.querySelector(`[data-level-db="${CSS.escape(a.exe)}"]`);
-        if (readout) readout.textContent = m.hold <= -60 ? "−∞" : `${fmtDb(m.hold)} dB`;
+        if (readout) { readout.textContent = silent ? "−∞" : `${fmtDb(m.hold)} dB`; readout.classList.toggle("silent", silent); }
       }
     } catch { /* devices changing */ }
   }
