@@ -117,6 +117,17 @@ function makeFader(label, onInput) {
   return el;
 }
 
+// Meter segments are real elements rather than a repeating gradient: the browser snaps elements to
+// whole pixels, so they stay even at 125 % or 150 % display scaling. The lit copy sits on top of the
+// dark one and is cut off at the level.
+const SEGMENTS = 30;
+function segments(lit) {
+  return h("span", { class: lit ? "segs lit" : "segs" }, ...Array.from({ length: SEGMENTS }, (_, k) =>
+    h("i", lit && k >= SEGMENTS * 0.85 ? { class: "hot" } : lit && k >= SEGMENTS * 0.7 ? { class: "warn" } : {})));
+}
+/** Rounds a meter percentage to whole segments, like LEDs. */
+const toSegment = (pct) => Math.round((pct / 100) * SEGMENTS) * (100 / SEGMENTS);
+
 // Built once and then updated in place, so a slider is never replaced under the mouse.
 const rows = [];
 const meters = []; // per channel: { lits, peaks, hold, holdAt }
@@ -131,12 +142,14 @@ function buildRows() {
       send(`ch${i}`, () => invoke("set_channel", { index: i, settings: settings() }));
     });
     const mute = h("button", { type: "button", class: "btn mute fly-mute" });
-    const lits = [h("i", { class: "lit" }), h("i", { class: "lit" })];
+    const lits = [segments(true), segments(true)];
     const peaks = [h("i", { class: "peak" }), h("i", { class: "peak" })];
     meters[i] = { lits, peaks, hold: [0, 0], holdAt: [0, 0] };
     const row = h("div", { class: "fly-row", style: `--c:${c.color}` },
       h("span", { class: "tape" }, c.name), fader, out, mute,
-      h("div", { class: "hbar", "aria-hidden": "true" }, h("span", {}, lits[0], peaks[0]), h("span", {}, lits[1], peaks[1])));
+      h("div", { class: "fmeter", "aria-hidden": "true" },
+        h("span", { class: "hrow" }, segments(false), lits[0], peaks[0]),
+        h("span", { class: "hrow" }, segments(false), lits[1], peaks[1])));
     const showMute = (muted) => {
       mute.setAttribute("aria-pressed", String(muted));
       mute.title = muted ? `Unmute ${c.name}` : `Mute ${c.name}`;
@@ -212,11 +225,11 @@ async function pollMeters() {
         if (!meter) return;
         pair.forEach((db, side) => {
           const pct = meterPct(db);
-          meter.lits[side].style.setProperty("--lvl", `${pct}%`);
+          meter.lits[side].style.setProperty("--lvl", `${toSegment(pct)}%`);
           // Same peak hold as the mixer: hold for 0.9 s, then fall.
           if (pct >= meter.hold[side]) { meter.hold[side] = pct; meter.holdAt[side] = now; }
           else if (now - meter.holdAt[side] > 900) meter.hold[side] = Math.max(pct, meter.hold[side] - 2.5);
-          meter.peaks[side].style.setProperty("--pk", `${meter.hold[side]}%`);
+          meter.peaks[side].style.setProperty("--pk", `${Math.min(toSegment(meter.hold[side]), 100 - 100 / SEGMENTS)}%`);
         });
       });
     } catch { /* engine restarting */ }

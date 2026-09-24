@@ -381,7 +381,7 @@ html:has(body.flyout-body), body.flyout-body { background: transparent; }
 .fly-row { --c: var(--game); display: grid; grid-template-columns: 58px minmax(0, 1fr) 40px 28px; gap: 3px 10px; align-items: center; }
 .fly-mute { width: 28px; height: 24px; padding: 0; display: grid; place-items: center; }
 .fly-mute svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
-.fly-row.muted .hfader .fill, .fly-row.muted .hfader .cap::after, .fly-row.muted output, .fly-row.muted .hbar .lit { opacity: .3; }
+.fly-row.muted .hfader .fill, .fly-row.muted .hfader .cap::after, .fly-row.muted output, .fly-row.muted .segs.lit { opacity: .3; }
 .fly-row .tape, .fly-mic .tape { font-size: 13px; padding: 0 6px; justify-self: start; }
 /* Horizontal fader: same groove, colour fill, unity mark and cap as the mixer's. */
 .hfader { position: relative; height: 22px; touch-action: none; cursor: ew-resize; border-radius: 5px; }
@@ -402,17 +402,16 @@ html:has(body.flyout-body), body.flyout-body { background: transparent; }
   box-shadow: 0 1px 4px rgba(0,0,0,.18);
 }
 .hfader .cap::after { content: ""; position: absolute; top: 4px; bottom: 4px; left: 50%; width: 2px; margin-left: -1px; background: var(--c); border-radius: 1px; }
-/* Segmented stereo meter under the fader, with the mixer's colours and peak mark. */
-.hbar { grid-column: 2; display: grid; gap: 2px; margin: 0 9px; }
-.hbar > span { position: relative; height: 3px; background: repeating-linear-gradient(to right, var(--seg-off) 0 3px, transparent 3px 5px); }
-.hbar .lit {
-  position: absolute; inset: 0;
-  background: linear-gradient(to right, var(--ok) 0 70%, var(--warn) 70% 85%, var(--hot) 85% 100%);
-  -webkit-mask: repeating-linear-gradient(to right, #000 0 3px, transparent 3px 5px);
-          mask: repeating-linear-gradient(to right, #000 0 3px, transparent 3px 5px);
-  clip-path: inset(0 calc(100% - var(--lvl, 0%)) 0 0);
-}
-.hbar .peak { position: absolute; top: -1px; bottom: -1px; width: 2px; left: var(--pk, 0%); background: var(--text); opacity: .75; }
+/* Stereo meter under the fader: the mixer's colours and peak mark, as whole-pixel segments. */
+.fmeter { grid-column: 2; display: grid; gap: 2px; margin: 0 9px; }
+.hrow { position: relative; height: 4px; }
+.segs { position: absolute; inset: 0; display: flex; gap: 2px; }
+.segs i { flex: 1; min-width: 0; border-radius: 1px; background: var(--seg-off); }
+.segs.lit { clip-path: inset(0 calc(100% - var(--lvl, 0%)) 0 0); }
+.segs.lit i { background: var(--ok); }
+.segs.lit i.warn { background: var(--warn); }
+.segs.lit i.hot { background: var(--hot); }
+.hrow .peak { position: absolute; top: -1px; bottom: -1px; width: calc(100% / 30 - 2px); left: var(--pk, 0%); background: var(--text); opacity: .7; border-radius: 1px; }
 .fly-row output { font: 12px var(--font-num); text-align: right; font-variant-numeric: tabular-nums; }
 
 /* Same first column as the channel rows, so the Mic tape lines up with the ones above it. */
