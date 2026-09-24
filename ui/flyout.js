@@ -224,17 +224,13 @@ async function pollMeters() {
   setTimeout(pollMeters, 50);
 }
 
-// Keep the window exactly as tall as the card (its border included).
-let fittedHeight = 0;
-new ResizeObserver(() => {
-  const height = Math.ceil($(".flyout").getBoundingClientRect().height);
-  if (height === fittedHeight) return;
-  fittedHeight = height;
-  invoke("fit_flyout", { height }).catch(() => {});
-}).observe($(".flyout"));
+// Keep the window exactly as tall as the card (its border included). Sent on every change and
+// every time the flyout opens: a resize requested while the window was hidden can be lost.
+const fit = () => invoke("fit_flyout", { height: Math.ceil($(".flyout").getBoundingClientRect().height) }).catch(() => {});
+new ResizeObserver(fit).observe($(".flyout"));
 
 // Volumes may have changed in the main window since the flyout was last open.
-listen("flyout-shown", () => { toggleOutputs(false); load().catch(() => {}); });
+listen("flyout-shown", () => { toggleOutputs(false); fit(); load().then(fit).catch(() => {}); });
 // The main window or a shortcut changed something. Changes made here are skipped (so a slider
 // being dragged isn't redrawn), and bursts reload at most about 8 times a second.
 let reloadTimer = null;

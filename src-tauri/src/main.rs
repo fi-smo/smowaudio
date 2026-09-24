@@ -43,6 +43,8 @@ struct AppState {
     /// Devices the streams were last set up for; the device watcher restarts them when it changes.
     device_fingerprint: Mutex<String>,
     updates: updates::Updates,
+    /// Height the flyout's content last asked for, in CSS pixels.
+    flyout_height: Mutex<Option<f64>>,
 }
 
 impl AppState {
@@ -549,7 +551,10 @@ const FLYOUT_SIZE: (f64, f64) = (360.0, 330.0);
 
 /// Sizes the flyout to its content (a CSS height), keeping its bottom edge above the taskbar.
 #[tauri::command]
-fn fit_flyout(window: WebviewWindow, height: f64) {
+fn fit_flyout(state: State<AppState>, window: WebviewWindow, height: f64) {
+    // Remembered so the flyout gets the right size before it's placed on the next show, even if
+    // this resize happened (or failed) while it was hidden.
+    *state.flyout_height.lock() = Some(height);
     let (Ok(scale), Ok(position), Ok(size)) = (window.scale_factor(), window.outer_position(), window.outer_size())
     else {
         return;
@@ -615,6 +620,9 @@ fn toggle_flyout(app: &AppHandle, click: PhysicalPosition<f64>) {
             window
         }
     };
+    if let Some(height) = *state.flyout_height.lock() {
+        let _ = window.set_size(tauri::LogicalSize::new(FLYOUT_SIZE.0, height));
+    }
     place_flyout(&window, click);
     let _ = window.show();
     let _ = window.set_focus();
@@ -692,6 +700,7 @@ fn main() {
         hotkey_errors: Mutex::new(BTreeMap::new()),
         device_fingerprint: Mutex::new(String::new()),
         updates: updates::Updates::default(),
+        flyout_height: Mutex::new(None),
     };
 
     let app = tauri::Builder::default()
