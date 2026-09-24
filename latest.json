@@ -1,0 +1,11 @@
+{
+  "version": "0.3.0",
+  "notes": "**Full Changelog**: https://github.com/fi-smo/smowaudio/commits/v0.3.0",
+  "pub_date": "2026-09-24T13:36:07Z",
+  "platforms": {
+    "windows-x86_64": {
+      "url": "https://api.github.com/repos/fi-smo/smowaudio/releases/assets/586032302",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUUGE5WVQ1cklLbXQ4M2V6aUNPTzlrdDhKV3ErcVI4VFVwNTk5NExIcUpuY0xiZVdMRWsvUTR4STBkdGl1Z3NabGVjbFlUa3dNR1VNUWtZVHEzQjJOc2htMHcxRlNwV2dZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMjU2OTMzCWZpbGU6U21vd2F1ZGlvXzAuMy4wX3g2NC1zZXR1cC5leGUKQmVvbWgxa21wY09jM0ZjQnhPQ0ROOUlhb0E4bUpub2FTZVEwTGkwNmxaNlBxRTloNVQxY2lpRXhxRHN6TDFwa0lpT2lhWUwxSkpWZEpZYjFkbVpaQUE9PQo="
+    }
+  }
+}
