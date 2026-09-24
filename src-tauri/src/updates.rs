@@ -31,6 +31,10 @@ pub struct UpdateStatus {
     pub error: Option<String>,
     /// A check has completed since the app started.
     pub checked: bool,
+    /// When the last successful check finished (Unix time in ms), for "checked 2 min ago".
+    pub checked_at: Option<u64>,
+    /// The saved token with its middle hidden, e.g. "github_pat_••••UzW9".
+    pub token_mask: Option<String>,
 }
 
 #[derive(Default)]
@@ -43,8 +47,15 @@ pub fn status(app: &AppHandle) -> UpdateStatus {
     let updates = app.state::<AppState>();
     let mut status = updates.updates.status.lock().clone();
     status.current = app.package_info().version.to_string();
-    status.token_hint = crate::secrets::read_token().map(|t| hint(&t));
+    let token = crate::secrets::read_token();
+    status.token_hint = token.as_deref().map(hint);
+    status.token_mask = token.as_deref().map(mask);
     status
+}
+
+fn mask(token: &str) -> String {
+    let prefix = ["github_pat_", "ghp_"].into_iter().find(|p| token.starts_with(p)).unwrap_or("");
+    format!("{prefix}••••{}", hint(token).trim_start_matches('…'))
 }
 
 fn hint(token: &str) -> String {
@@ -71,6 +82,12 @@ pub async fn check(app: &AppHandle) -> Result<Option<String>, String> {
                 status.error = None;
             }
             Err(e) => status.error = Some(e.clone()),
+        }
+        if result.is_ok() {
+            status.checked_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_millis() as u64);
         }
     }
     let version = result.as_ref().ok().and_then(|u| u.as_ref().map(|u| u.version.clone()));

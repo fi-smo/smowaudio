@@ -790,93 +790,377 @@ function outputName() {
 // Device choices picked in Settings but not applied yet; changes from elsewhere mustn't wipe them.
 let settingsDirty = false;
 
+// Remembered between sessions; localStorage can be unavailable, which just means no memory.
+const store = {
+  get(key, fallback) { try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; } },
+  set(key, value) { try { localStorage.setItem(key, value); } catch { /* not remembered */ } },
+};
+
+const SETTINGS_TABS = [["devices", "Devices"], ["general", "General"], ["shortcuts", "Shortcuts"], ["updates", "Updates"]];
+let settingsTab = store.get("settingsTab", "devices");
+if (!SETTINGS_TABS.some(([id]) => id === settingsTab)) settingsTab = "devices";
+
+function setSettingsTab(id) {
+  settingsTab = id;
+  store.set("settingsTab", id);
+  if (recording) stopRecording();
+  renderSettings();
+}
+
 function renderSettings() {
   settingsDirty = false;
   const root = $("#view-settings");
-  const cfg = snap.config;
-  const physical = (list) => list.filter((d) => !isVirtual(d));
-  const cables = (list) => list.filter((d) => d.hardware.includes("VB-Audio"));
-  const select = (label, list, value, emptyLabel, hint) => {
-    const s = h("select", { class: "input", "aria-label": label },
-      h("option", { value: "" }, emptyLabel),
-      ...list.map((d) => { const o = h("option", { value: d.id }, d.name); o.selected = d.id === value; return o; }));
-    s.addEventListener("change", () => { settingsDirty = true; });
-    return { el: h("label", { class: "field" }, h("span", {}, label), s, hint ? h("p", { class: "hint" }, hint) : null), s };
-  };
-  const output = select("Headphones / speakers", physical(snap.render_devices), cfg.output_device, "Automatic (your usual default)");
-  const mic = select("Microphone", physical(snap.capture_devices), cfg.mic_device, "Automatic (your usual default)");
-  const micSink = select("Virtual Mic cable", cables(snap.render_devices), cfg.mic_sink, "None", "Pick the cable's Input side. Apps then use its Output side as the microphone.");
-  const sources = CHANNELS.map((c, i) => select(`${c.name} cable`, cables(snap.capture_devices), cfg.channels[i].source, "None", i === 0 ? "Pick the cable's Output side; apps are routed to its Input side." : null));
-
-  const apply = h("button", { type: "button", class: "btn primary" }, "Apply and restart audio");
-  apply.addEventListener("click", async () => {
-    const v = (x) => x.s.value || null;
-    try {
-      await invoke("set_devices", { output: v(output), mic: v(mic), micSink: v(micSink), sources: sources.map(v) });
-      await loadState();
-      toast("Audio restarted with the new devices");
-    } catch (e) { showError(e); }
-  });
-
-  const launch = switchEl("Launch at Windows sign-in", cfg.launch_at_login, (on) => invoke("set_launch_at_login", { enabled: on }).catch(showError));
-  const defaults = switchEl("Set Windows default devices", cfg.set_windows_defaults, (on) =>
-    invoke("set_windows_defaults", { enabled: on }).then(() => toast(on ? "Game, Chat and Virtual Mic are now the Windows defaults" : "Your previous Windows defaults are restored")).catch(showError));
-
-  const statusList = h("div", { class: "statuslist", id: "status-list" });
+  const bad = failingStreams().length;
+  const tabs = h("div", { class: "tabs", role: "tablist", "aria-label": "Settings sections" }, ...SETTINGS_TABS.map(([id, label]) => {
+    const b = h("button", { type: "button", role: "tab", id: `tab-${id}`, "aria-selected": String(id === settingsTab), "aria-controls": "settings-panel" }, label,
+      id === "devices" ? h("span", { class: "tabdot", id: "tabdot-devices", hidden: !bad, title: "A stream has stopped" }) : null);
+    b.addEventListener("click", () => setSettingsTab(id));
+    return b;
+  }));
+  const content = { devices: devicesTab, general: generalTab, shortcuts: shortcutsTab, updates: updatesTab }[settingsTab]();
   root.replaceChildren(
-    viewHead("Settings"),
-    h("div", { class: "settings" },
-      h("section", { class: "pane" }, h("h3", {}, "Devices"), output.el, mic.el, micSink.el, ...sources.map((s) => s.el), apply),
-      h("section", { class: "pane" }, h("h3", {}, "General"),
-        launch.el, h("p", { class: "hint" }, "Starts Smowaudio in the tray when you sign in."),
-        defaults.el, h("p", { class: "hint" }, "Like Sonar: Game becomes the default playback device, Chat the communications device and the Virtual Mic the recording device. Turning this off restores the defaults you had before.")),
-      h("section", { class: "pane" }, h("h3", {}, "Audio streams"), statusList,
-        h("p", { class: "hint" }, "Problems are also written to %APPDATA%\\Smowaudio\\smowaudio.log.")),
-      updatesPane(),
-      shortcutsPane()));
+    h("div", { class: "viewhead" }, h("h2", {}, "Settings")),
+    tabs,
+    h("div", { class: "settings-body", id: "settings-panel", role: "tabpanel", "aria-labelledby": `tab-${settingsTab}` }, ...content));
+  if (settingsTab === "shortcuts") renderShortcuts();
   renderStatus();
   refreshUpdates();
 }
 
-// ---------- updates ----------
+// ---------- settings: building blocks ----------
+/** A card: optional header (title + subtitle), then setting rows. */
+function card(head, ...children) {
+  return h("section", { class: "card" },
+    head ? h("div", { class: "card-head" }, h("h3", {}, head.title), head.sub ? h("p", {}, head.sub) : null) : null,
+    ...children);
+}
+
+/** The one row layout every setting uses: label and help on the left, the control on the right. */
+function settingRow({ label, help, control, compact = false, fit = false, key }) {
+  const helpEl = h("p", { class: "srow-help" }, help ?? "");
+  helpEl.hidden = !help;
+  const row = h("div", { class: "srow" + (compact ? " compact" : "") + (fit ? " fit" : ""), "data-row": key },
+    h("div", { class: "srow-text" }, h("div", { class: "srow-label" }, label), helpEl),
+    h("div", { class: "srow-control" }, control));
+  return { row, helpEl };
+}
+
+const chevron = (up) => h("span", { class: "chev" + (up ? " up" : ""), "aria-hidden": "true" });
+
+// ---------- settings: stream health ----------
+// The order streams are listed in; unknown ones go last.
+const STREAM_ORDER = ["App routing", "Output", "Aux input", "Game input", "Chat input", "Media input", "Microphone", "Virtual mic", "Virtual mic listeners"];
+let healthExpanded = null; // null: open exactly when something is failing
+
+function streams() {
+  const rank = (name) => { const i = STREAM_ORDER.indexOf(name); return i < 0 ? STREAM_ORDER.length : i; };
+  return Object.entries(snap?.status ?? {})
+    .map(([name, state]) => ({ name, ok: state === "running", reason: state === "running" ? null : state }))
+    .sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name));
+}
+const failingStreams = () => streams().filter((s) => !s.ok);
+const deviceMissing = (reason) => /no physical audio device/i.test(reason ?? "");
+
+function reasonText(stream) {
+  const reason = stream.reason.replace(/[.\s]+$/, "");
+  const sentence = reason.charAt(0).toLowerCase() + reason.slice(1);
+  return deviceMissing(reason) ? `${sentence}. Plug one in or pick another below.` : `${sentence}.`;
+}
+
+function healthCard() {
+  const el = h("section", { class: "card health", "data-health": "" });
+  fillHealth(el);
+  return el;
+}
+
+function fillHealth(el) {
+  const list = streams();
+  const bad = list.filter((s) => !s.ok);
+  const expanded = healthExpanded ?? bad.length > 0;
+  el.classList.toggle("problem", bad.length > 0);
+  const toggle = h("button", { type: "button", class: "linkish", "aria-expanded": String(expanded) },
+    bad.length ? (expanded ? "Hide streams" : "Show streams") : (expanded ? "Hide details" : "Show details"), chevron(expanded));
+  toggle.addEventListener("click", () => {
+    healthExpanded = !expanded;
+    document.querySelectorAll("[data-health]").forEach(fillHealth);
+  });
+  let summary;
+  if (!bad.length) {
+    summary = h("span", { class: "health-text" }, h("b", {}, "Audio streams"),
+      h("span", { class: "muted" }, list.length ? ` — all ${list.length} running` : " — starting"));
+  } else {
+    const title = bad.length === 1 ? `${bad[0].name} stream stopped` : `${bad.length} streams stopped`;
+    summary = h("span", { class: "health-text" }, h("b", {}, title), h("span", { class: "muted" }, ` — ${reasonText(bad[0])}`));
+  }
+  const retry = bad.length ? h("button", { type: "button", class: "btn" }, "Retry") : null;
+  retry?.addEventListener("click", async () => {
+    retry.disabled = true;
+    retry.textContent = "Retrying…";
+    try {
+      await invoke("restart_audio");
+      // Streams report back within a moment of starting.
+      setTimeout(() => refreshStatus().catch(() => {}), 1500);
+    } catch (e) { showError(e); retry.disabled = false; retry.textContent = "Retry"; }
+  });
+  const head = h("div", { class: "health-head" }, h("span", { class: "dot" + (bad.length ? " warn" : "") }), summary, retry, toggle);
+  el.replaceChildren(head, ...(expanded ? [h("div", { class: "health-grid" }, ...list.map((s) =>
+    h("span", { class: s.ok ? "ok" : "bad", title: s.ok ? "Running" : s.reason }, h("i"), s.name)))] : []));
+}
+
+// ---------- settings: devices ----------
+// Every device and cable select applies as soon as it changes; this tracks each row's progress.
+const rowStatus = {}; // row key -> "applying" | "applied" | { error }
+const deviceRows = {}; // row key -> { row, select, helpEl, help() }
+const DEVICE_FIELDS = {
+  output: { get: (c) => c.output_device, set: (c, v) => { c.output_device = v; } },
+  mic: { get: (c) => c.mic_device, set: (c, v) => { c.mic_device = v; } },
+  mic_sink: { get: (c) => c.mic_sink, set: (c, v) => { c.mic_sink = v; } },
+  ...Object.fromEntries(CHANNELS.map((_, i) => [`source${i}`, {
+    get: (c) => c.channels[i].source, set: (c, v) => { c.channels[i].source = v; },
+  }])),
+};
+
+/** "CABLE-C Input (VB-Audio Cable C)" -> "CABLE-C Output": the side apps use. */
+function pairedSide(list, id) {
+  const name = deviceName(list, id);
+  if (!name) return null;
+  const base = name.replace(/\s*\(.*\)\s*$/, "");
+  return /Input$/.test(base) ? base.replace(/Input$/, "Output") : base.replace(/Output$/, "Input");
+}
+
+function deviceRow({ key, label, list, empty, help, compact }) {
+  const value = DEVICE_FIELDS[key].get(snap.config) ?? "";
+  const select = h("select", { class: "input", "aria-label": typeof label === "string" ? label : key },
+    h("option", { value: "" }, empty),
+    ...list.map((d) => { const o = h("option", { value: d.id }, d.name); o.selected = d.id === value; return o; }));
+  // A device that's configured but unplugged still needs to show as selected.
+  if (value && !list.some((d) => d.id === value)) select.prepend(h("option", { value, selected: true }, "Unavailable device"));
+  select.value = value;
+  const { row, helpEl } = settingRow({ label, control: select, key, compact });
+  deviceRows[key] = { row, select, helpEl, help };
+  select.addEventListener("change", () => pickDevice(key, select.value || null));
+  showDeviceRow(key);
+  return row;
+}
+
+function showDeviceRow(key) {
+  const r = deviceRows[key];
+  if (!r) return;
+  const st = rowStatus[key];
+  const selected = r.select.selectedOptions[0];
+  r.select.title = selected ? selected.textContent : "";
+  r.select.disabled = st === "applying";
+  r.row.classList.toggle("applied", st === "applied");
+  const base = r.help();
+  r.select.classList.toggle("invalid", Boolean(base?.bad));
+  let content = base?.text ?? base, cls = base?.bad ? "bad" : "";
+  if (st === "applying") { content = "Applying…"; cls = "muted"; }
+  else if (st === "applied") { content = "✓ Applied · audio restarted"; cls = "ok"; }
+  else if (st?.error) { content = st.error; cls = "bad"; }
+  r.helpEl.className = "srow-help" + (cls ? ` ${cls}` : "");
+  r.helpEl.replaceChildren(...(content === undefined || content === null ? [] : [].concat(content)));
+  r.helpEl.hidden = content === undefined || content === null || content === "";
+}
+
+let applyTimer = null;
+let applyQueue = Promise.resolve();
+const pendingKeys = new Set();
+let pendingPrevious = {};
+
+function pickDevice(key, value) {
+  if (!(key in pendingPrevious)) pendingPrevious[key] = DEVICE_FIELDS[key].get(snap.config) ?? null;
+  DEVICE_FIELDS[key].set(snap.config, value);
+  pendingKeys.add(key);
+  rowStatus[key] = "applying";
+  showDeviceRow(key);
+  // Several changes in quick succession restart audio once.
+  clearTimeout(applyTimer);
+  applyTimer = setTimeout(() => { applyQueue = applyQueue.then(applyDevices); }, 400);
+}
+
+async function applyDevices() {
+  const keys = [...pendingKeys];
+  const previous = pendingPrevious;
+  pendingKeys.clear();
+  pendingPrevious = {};
+  if (!keys.length) return;
+  const c = snap.config;
+  try {
+    await invoke("set_devices", { output: c.output_device, mic: c.mic_device, micSink: c.mic_sink, sources: c.channels.map((x) => x.source) });
+    keys.forEach((k) => { rowStatus[k] = "applied"; });
+    await loadState();
+    setTimeout(() => keys.forEach((k) => { if (rowStatus[k] === "applied") { delete rowStatus[k]; showDeviceRow(k); } }), 2500);
+  } catch (e) {
+    for (const k of keys) {
+      DEVICE_FIELDS[k].set(snap.config, previous[k]);
+      rowStatus[k] = { error: `Couldn't apply: ${String(e)}` };
+    }
+    if (view === "settings" && settingsTab === "devices") renderSettings();
+  }
+}
+
+function devicesTab() {
+  const physical = (list) => list.filter((d) => !isVirtual(d));
+  const cables = (list) => list.filter((d) => d.hardware.includes("VB-Audio"));
+  const code = (text) => h("code", {}, text);
+  const channelHelp = (i) => () => {
+    const side = pairedSide(snap.capture_devices, snap.config.channels[i].source);
+    return side ? ["Apps play into ", code(side)] : "No cable: this channel is off";
+  };
+  return [
+    failingStreams().length ? healthCard() : null,
+    card({ title: "Playback and recording" },
+      deviceRow({ key: "output", label: "Headphones / speakers", list: physical(snap.render_devices), empty: "Automatic (your usual default)",
+        help: () => "Where every channel is mixed down to." }),
+      deviceRow({ key: "mic", label: "Microphone", list: physical(snap.capture_devices), empty: "Automatic (your usual default)",
+        help: () => deviceMissing(snap.status.Microphone)
+          ? { text: "No microphone found. Connect one, or pick a specific device.", bad: true }
+          : "Filtered by the chain in the Mic tab, then sent to the Virtual Mic." })),
+    card({ title: "Virtual cables", sub: "Each channel runs through one VB-Audio cable. Pick the side Smowaudio listens on — the other side is set up for you. Changes apply immediately and briefly restart audio." },
+      deviceRow({ key: "mic_sink", label: cableLabelEl("Virtual mic", "var(--mic)"), list: cables(snap.render_devices), empty: "None", compact: true,
+        help: () => { const side = pairedSide(snap.render_devices, snap.config.mic_sink); return side ? ["Apps pick ", code(side), " as their mic"] : "No cable: apps have no Virtual Mic"; } }),
+      ...CHANNELS.map((c, i) => deviceRow({ key: `source${i}`, label: cableLabelEl(c.name, c.color), list: cables(snap.capture_devices), empty: "None", compact: true, help: channelHelp(i) }))),
+  ];
+}
+
+const cableLabelEl = (name, color) => h("span", { class: "tape small", style: `--c:${color}` }, name);
+
+
+// ---------- settings: general ----------
+function generalTab() {
+  const cfg = snap.config;
+  const launch = switchEl("", cfg.launch_at_login, (on) => invoke("set_launch_at_login", { enabled: on }).catch((e) => { showError(e); launch.input.checked = !on; }));
+  launch.input.setAttribute("aria-label", "Launch at Windows sign-in");
+  const chips = h("div", { class: "chips-row" + (cfg.set_windows_defaults ? "" : " off") },
+    defaultChip("Playback", "Game", "var(--game)"), defaultChip("Communications", "Chat", "var(--chat)"), defaultChip("Recording", "Virtual mic", "var(--mic)"));
+  const defaults = switchEl("", cfg.set_windows_defaults, async (on) => {
+    chips.classList.toggle("off", !on);
+    try {
+      await invoke("set_windows_defaults", { enabled: on });
+      cfg.set_windows_defaults = on;
+      toast(on ? "Game, Chat and Virtual Mic are now the Windows defaults" : "Your previous Windows defaults are restored");
+    } catch (e) { showError(e); defaults.input.checked = !on; chips.classList.toggle("off", on); }
+  });
+  defaults.input.setAttribute("aria-label", "Set Windows default devices");
+  const defaultsRow = settingRow({ label: "Set Windows default devices", fit: true, control: defaults.el,
+    help: "While Smowaudio runs, Windows uses these defaults. Turning this off restores the ones you had before." });
+  defaultsRow.row.querySelector(".srow-text").append(chips);
+
+  const openFolder = h("button", { type: "button", class: "btn" }, "Open folder");
+  openFolder.addEventListener("click", () => invoke("open_log_folder").catch(showError));
+  const logPath = h("span", { class: "path" }, "%APPDATA%\\Smowaudio\\smowaudio.log");
+  return [
+    card(null,
+      settingRow({ label: "Launch at Windows sign-in", help: "Starts Smowaudio in the tray when you sign in.", control: launch.el, fit: true }).row,
+      defaultsRow.row),
+    h("section", { class: "card" }, healthBlock(), settingRow({ label: "Log file", help: logPath, control: openFolder, fit: true }).row),
+  ];
+}
+
+const defaultChip = (label, value, color) => h("span", { class: "chip" }, h("span", {}, label), h("b", { style: `color:${color}` }, value));
+
+/** The stream health summary without a card of its own, for placing inside another card. */
+function healthBlock() {
+  const el = h("div", { class: "health-block", "data-health": "" });
+  fillHealth(el);
+  return el;
+}
+
+// ---------- settings: updates ----------
 const TOKEN_PAGE = "https://github.com/settings/personal-access-tokens/new";
+const TOKEN_PREFIX = /^(github_pat_|ghp_)/;
 let updateStatus = null;
 let installing = false;
+let tokenEditing = false;
+let removeArmed = null; // timer while "Confirm remove" is showing
 
-function updatesPane() {
-  const input = h("input", { class: "input", id: "update-token", type: "password", autocomplete: "off", spellcheck: "false", placeholder: "github_pat_…" });
-  // A half-typed token counts as an unapplied edit, so background refreshes don't wipe it.
-  input.addEventListener("input", () => { settingsDirty = true; });
-  const save = h("button", { type: "button", class: "btn" }, "Save token");
-  save.addEventListener("click", async () => {
-    try {
-      updateStatus = await invoke("set_github_token", { token: input.value });
-      input.value = "";
-      renderUpdates();
-      toast(updateStatus.token_hint ? "Token saved in Windows Credential Manager" : "Token removed");
-      if (updateStatus.token_hint) checkUpdates();
-    } catch (e) { showError(e); }
-  });
-  const remove = h("button", { type: "button", class: "iconbtn", id: "update-token-remove" }, "Remove");
-  remove.addEventListener("click", async () => {
-    try { updateStatus = await invoke("set_github_token", { token: "" }); renderUpdates(); toast("Token removed"); } catch (e) { showError(e); }
-  });
-  const link = h("button", { type: "button", class: "linkbtn" }, "Create a token on GitHub");
-  link.addEventListener("click", () => invoke("open_url", { url: TOKEN_PAGE }).catch(showError));
+function updatesTab() {
   const check = h("button", { type: "button", class: "btn", id: "update-check" }, "Check for updates");
   check.addEventListener("click", () => checkUpdates(true));
   const install = h("button", { type: "button", class: "btn primary", id: "update-install", hidden: true }, "Install update");
   install.addEventListener("click", installUpdate);
-  return h("section", { class: "pane updates" }, h("h3", {}, "Updates"),
-    h("div", { class: "update-state", id: "update-state" }),
-    h("div", { class: "update-actions" }, check, install),
-    h("div", { class: "update-progress", id: "update-progress", hidden: true }, h("i")),
-    h("p", { class: "hint", id: "update-notes", hidden: true }),
-    h("label", { class: "field" }, h("span", {}, "GitHub token"),
-      h("div", { class: "token-row" }, input, save, remove),
-      h("p", { class: "hint", id: "update-token-hint" })),
-    h("p", { class: "hint" }, "Updates come from your private repo, so the app needs a token that can read it. ", link,
-      ": choose Only select repositories → smowaudio, and under Repository permissions set Contents to Read-only. It's stored in Windows Credential Manager, not in the config file."));
+  const version = h("section", { class: "card" },
+    h("div", { class: "srow fit" },
+      h("div", { class: "srow-text" }, h("div", { class: "version num", id: "update-version" }), h("p", { class: "srow-help", id: "update-state" })),
+      h("div", { class: "srow-control" }, install, check)),
+    h("div", { class: "update-extra", id: "update-extra", hidden: true },
+      h("div", { class: "update-progress", id: "update-progress", hidden: true }, h("i")),
+      h("p", { class: "update-notes", id: "update-notes", hidden: true })));
+  const access = h("section", { class: "card" },
+    h("div", { class: "card-head" }, h("h3", {}, "GitHub access"),
+      h("p", {}, "Updates come from a private repo, so Smowaudio needs a read-only token. It's kept in Windows Credential Manager, not the config file.")),
+    h("div", { id: "token-area" }),
+    tokenHowTo());
+  return [version, access];
+}
+
+function tokenHowTo() {
+  const link = h("button", { type: "button", class: "linkbtn" }, "Open fine-grained tokens on GitHub");
+  link.addEventListener("click", () => invoke("open_url", { url: TOKEN_PAGE }).catch(showError));
+  const details = h("details", { class: "howto", id: "token-howto" },
+    h("summary", {}, "How to create a token"),
+    h("ol", {},
+      h("li", {}, link),
+      h("li", {}, "Repository access → ", h("b", {}, "Only select repositories"), " → smowaudio"),
+      h("li", {}, "Repository permissions → ", h("b", {}, "Contents: Read-only")),
+      h("li", {}, "Generate, copy, then paste it here with Replace")));
+  details.open = !updateStatus?.token_hint;
+  return details;
+}
+
+function renderTokenArea() {
+  const area = $("#token-area");
+  const st = updateStatus;
+  if (!area || !st) return;
+  const mode = st.token_hint && !tokenEditing ? "saved" : "edit";
+  // Never rebuild the field while it's showing: that would wipe a token being typed.
+  if (mode === "edit" && area.dataset.mode === "edit" && $("#update-token")) return;
+  area.dataset.mode = mode;
+  if (mode === "saved") {
+    const replace = h("button", { type: "button", class: "btn" }, "Replace");
+    replace.addEventListener("click", () => {
+      clearTimeout(removeArmed);
+      removeArmed = null;
+      tokenEditing = true;
+      renderTokenArea();
+      $("#update-token")?.focus();
+    });
+    const remove = h("button", { type: "button", class: "btn danger" }, removeArmed ? "Confirm remove" : "Remove");
+    remove.addEventListener("click", async () => {
+      if (!removeArmed) {
+        // Removing asks once more, inline, for three seconds.
+        removeArmed = setTimeout(() => { removeArmed = null; renderTokenArea(); }, 3000);
+        renderTokenArea();
+        return;
+      }
+      clearTimeout(removeArmed);
+      removeArmed = null;
+      try { updateStatus = await invoke("set_github_token", { token: "" }); toast("Token removed"); renderUpdates(); } catch (e) { showError(e); }
+    });
+    area.replaceChildren(h("div", { class: "srow fit token-saved" },
+      h("div", { class: "srow-text" }, h("div", { class: "srow-label" }, h("span", { class: "dot" }), "Token saved", h("span", { class: "mask" }, st.token_mask ?? st.token_hint))),
+      h("div", { class: "srow-control" }, replace, remove)));
+    return;
+  }
+  const input = h("input", { class: "input", id: "update-token", type: "password", autocomplete: "off", spellcheck: "false", placeholder: "github_pat_…", "aria-label": "GitHub token" });
+  const save = h("button", { type: "button", class: "btn", disabled: true }, "Save token");
+  // A half-typed token counts as an unapplied edit, so background refreshes don't wipe it.
+  input.addEventListener("input", () => { settingsDirty = true; save.disabled = !TOKEN_PREFIX.test(input.value.trim()); });
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !save.disabled) save.click(); });
+  save.addEventListener("click", async () => {
+    try {
+      updateStatus = await invoke("set_github_token", { token: input.value });
+      tokenEditing = false;
+      area.dataset.mode = "";
+      settingsDirty = false;
+      toast("Token saved in Windows Credential Manager");
+      renderUpdates();
+      checkUpdates();
+    } catch (e) { showError(e); }
+  });
+  const cancel = st.token_hint ? h("button", { type: "button", class: "iconbtn" }, "Cancel") : null;
+  cancel?.addEventListener("click", () => { tokenEditing = false; settingsDirty = false; area.dataset.mode = ""; renderTokenArea(); });
+  area.replaceChildren(h("div", { class: "srow token-edit" }, h("div", { class: "token-row" }, input, save, cancel)));
 }
 
 async function refreshUpdates() {
@@ -884,29 +1168,37 @@ async function refreshUpdates() {
   renderUpdates();
 }
 
+function ago(ms) {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const hrs = Math.round(m / 60);
+  return hrs < 24 ? `${hrs} h ago` : `${Math.round(hrs / 24)} d ago`;
+}
+
 function renderUpdates() {
   const st = updateStatus;
   if (!st) return;
-  const pill = $("#pill-update");
-  pill.hidden = !st.available;
+  $("#pill-update").hidden = !st.available;
   $("#pill-update-version").textContent = st.available ?? "";
   const state = $("#update-state");
   if (!state) return;
-  const line = (cls, text) => h("span", { class: cls }, text);
-  state.replaceChildren(
-    line("num", `Version ${st.current}`),
-    st.available ? line("update-new", `Version ${st.available} is available`)
-      : st.error ? line("bad", st.error)
-      : st.checked ? line("ok", "You're up to date")
-      : line("faint", st.token_hint ? "Not checked yet" : "Add a token to check for updates"));
+  $("#update-version").textContent = `Version ${st.current}`;
+  const [text, cls] = st.available ? [`Version ${st.available} is available`, "ok"]
+    : st.error ? [st.error, "bad"]
+    : st.checked ? [`You're up to date${st.checked_at ? ` · checked ${ago(st.checked_at)}` : ""}`, "ok"]
+    : [st.token_hint ? "Not checked yet" : "Add a GitHub token below to check for updates", ""];
+  state.textContent = text;
+  state.className = "srow-help" + (cls ? ` ${cls}` : "");
   $("#update-install").hidden = !st.available;
   $("#update-install").disabled = installing;
   $("#update-check").disabled = installing || !st.token_hint;
-  $("#update-token-remove").hidden = !st.token_hint;
-  $("#update-token-hint").textContent = st.token_hint ? `Saved token ending in ${st.token_hint.replace("…", "")}. Paste a new one to replace it.` : "No token saved.";
   const notes = $("#update-notes");
   notes.hidden = !(st.available && st.notes);
   notes.textContent = st.notes ?? "";
+  $("#update-extra").hidden = notes.hidden && $("#update-progress").hidden;
+  renderTokenArea();
 }
 
 async function checkUpdates(manual = false) {
@@ -924,6 +1216,7 @@ async function installUpdate() {
   installing = true;
   renderUpdates();
   $("#update-progress").hidden = false;
+  $("#update-extra").hidden = false;
   $("#update-install").textContent = "Downloading…";
   try {
     // On success the installer closes this app and starts the new version.
@@ -945,12 +1238,12 @@ listen("update-progress", (e) => {
   const button = $("#update-install");
   if (button && total) button.textContent = downloaded >= total ? "Installing…" : `Downloading… ${Math.round((downloaded / total) * 100)} %`;
 });
-$("#pill-update").addEventListener("click", () => setView("settings"));
+$("#pill-update").addEventListener("click", () => { setSettingsTab("updates"); setView("settings"); });
 
 // ---------- keyboard shortcuts ----------
 // Action ids must match hotkeys.rs.
 const channelShortcuts = (id, name, color) => ({
-  title: name, color, actions: [
+  id, title: name, color, actions: [
     [`channel.${id}.volume_up`, "Volume up"],
     [`channel.${id}.volume_down`, "Volume down"],
     [`channel.${id}.mute`, "Mute on/off"],
@@ -958,16 +1251,16 @@ const channelShortcuts = (id, name, color) => ({
   ],
 });
 const SHORTCUT_GROUPS = [
-  { title: "General", actions: [
+  { id: "general", title: "General", actions: [
     ["app.mixer", "Open the mixer"],
     ["app.flyout", "Show or hide the tray flyout"],
     ["output.next", "Next output device"],
     ["output.previous", "Previous output device"],
     ["windows_defaults", "Windows default devices on/off"],
   ] },
-  ...CHANNELS.map((c) => channelShortcuts(c.name.toLowerCase(), c.name, c.color)),
   channelShortcuts("master", "Master", "var(--master)"),
-  { title: "Mic", color: "var(--mic)", actions: [
+  ...CHANNELS.map((c) => channelShortcuts(c.name.toLowerCase(), c.name, c.color)),
+  { id: "mic", title: "Mic", color: "var(--mic)", actions: [
     ["mic.mute", "Mute on/off"],
     ["mic.push_to_talk", "Push to talk (hold)"],
     ["mic.push_to_mute", "Push to mute (hold)"],
@@ -981,9 +1274,12 @@ const SHORTCUT_GROUPS = [
     ["mic.compressor", "Compressor on/off"],
   ] },
 ];
+const groupOf = (action) => SHORTCUT_GROUPS.find((g) => g.actions.some(([id]) => id === action));
+const actionLabel = (action) => groupOf(action)?.actions.find(([id]) => id === action)?.[1] ?? action;
+/** "Game → Mute on/off", or just the label for General actions. */
 const shortcutLabel = (action) => {
-  for (const g of SHORTCUT_GROUPS) for (const [id, label] of g.actions) if (id === action) return g.title === "General" ? label : `${g.title}: ${label}`;
-  return action;
+  const g = groupOf(action);
+  return !g ? action : g.id === "general" ? actionLabel(action) : `${g.title} → ${actionLabel(action)}`;
 };
 
 // KeyboardEvent.code -> what's printed on the key. Codes not listed show as-is (F13, Pause…).
@@ -997,23 +1293,27 @@ const KEY_NAMES = {
   MediaTrackPrevious: "Previous Track", Super: "Win",
 };
 const keyName = (part) => KEY_NAMES[part] ?? part.replace(/^Key|^Digit/, "").replace(/^Numpad(\d)$/, "Num $1");
+const comboText = (keys) => keys.split("+").map(keyName).join(" + ");
 // Keys the shortcut library can register (global-hotkey's parser).
 const SUPPORTED_KEY = /^(Key[A-Z]|Digit\d|F([1-9]|1\d|2[0-4])|Numpad(\d|Add|Subtract|Multiply|Divide|Decimal|Enter|Equal)|Arrow(Up|Down|Left|Right)|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash|Space|Tab|Enter|Backspace|Delete|Insert|Home|End|PageUp|PageDown|PrintScreen|ScrollLock|Pause|NumLock|CapsLock|AudioVolume(Up|Down|Mute)|Media(PlayPause|Stop|TrackNext|TrackPrevious))$/;
 // Keys that are fine on their own; anything else needs a modifier so typing keeps working.
 const BARE_OK = /^(F([1-9]|1\d|2[0-4])|Pause|ScrollLock|PrintScreen|AudioVolume\w+|Media\w+)$/;
 const MODIFIER_CODES = new Set(["ControlLeft", "ControlRight", "AltLeft", "AltRight", "ShiftLeft", "ShiftRight", "MetaLeft", "MetaRight", "OSLeft", "OSRight"]);
 
-let recording = null; // { action, button, note }
+let shortcutChannel = store.get("shortcutChannel", "general");
+if (!SHORTCUT_GROUPS.some((g) => g.id === shortcutChannel)) shortcutChannel = "general";
+let recording = null; // { action }: the one row waiting for keys
+let conflict = null; // { action, combo, other }: a recorded combo another action already uses
+let recordNote = null; // { action, text }: why the last key pressed can't be used
 
-function keycaps(keys) {
-  return keys.split("+").map((k) => h("kbd", {}, keyName(k)));
-}
+const keycaps = (keys) => keys.split("+").map((k) => h("kbd", {}, keyName(k)));
+const totalShortcuts = () => Object.keys(snap.config.hotkeys).length;
 
-function shortcutsPane() {
+function shortcutsTab() {
   const cfg = snap.config;
   const steps = [0.01, 0.02, 0.05, 0.1];
   const step = h("div", { class: "seg", role: "group", "aria-label": "Volume step" }, ...steps.map((s) => {
-    const b = h("button", { type: "button", "aria-pressed": String(Math.abs(cfg.volume_step - s) < 0.001) }, `${Math.round(s * 100)} %`);
+    const b = h("button", { type: "button", "aria-pressed": String(Math.abs(cfg.volume_step - s) < 0.001) }, `${Math.round(s * 100)}%`);
     b.addEventListener("click", () => {
       cfg.volume_step = s;
       step.querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
@@ -1021,54 +1321,101 @@ function shortcutsPane() {
     });
     return b;
   }));
-
-  const groups = SHORTCUT_GROUPS.map((g) => h("div", { class: "keygroup" },
-    g.color ? tape(g.title, g.color) : h("h4", {}, g.title),
-    ...g.actions.map(([action, label]) => {
-      const keys = cfg.hotkeys[action];
-      const error = snap.hotkey_errors[action];
-      const button = h("button", { type: "button", class: "keybind" + (keys ? "" : " empty"), "aria-label": `${label}: ${keys ? keys.replaceAll("+", " ") : "not set"}. Change shortcut` },
-        ...(keys ? keycaps(keys) : ["Set"]));
-      const note = h("span", { class: "keynote" + (error ? " bad" : "") }, error ?? "");
-      button.addEventListener("click", () => startRecording(action, button, note));
-      const clear = keys ? h("button", { type: "button", class: "iconbtn keyclear", title: "Remove shortcut", "aria-label": `Remove shortcut for ${label}` }, "×") : null;
-      clear?.addEventListener("click", () => saveShortcut(action, null));
-      return h("div", { class: "keyrow" }, h("span", { class: "keylabel" }, label), button, clear ?? h("span"), note);
-    })));
-
-  return h("section", { class: "pane shortcuts" },
-    h("h3", {}, "Keyboard shortcuts"),
-    h("p", { class: "hint" }, "Work anywhere in Windows, even while a game has focus. Click a shortcut, then press the keys. Esc cancels, Backspace removes it."),
-    h("label", { class: "field inline" }, h("span", {}, "Volume step per press (holding glides)"), step),
-    h("div", { class: "keygroups" }, ...groups));
+  const reset = h("button", { type: "button", class: "btn", id: "sc-reset" }, "Reset all…");
+  reset.addEventListener("click", confirmResetShortcuts);
+  return [
+    h("div", { class: "sc-toolbar" },
+      h("p", {}, "Shortcuts work anywhere in Windows, even while a game has focus."),
+      h("label", { class: "sc-step" }, h("span", {}, "Volume step"), step),
+      reset),
+    h("section", { class: "card sc-card" }, h("nav", { class: "sc-list", id: "sc-list", "aria-label": "Shortcut groups" }), h("div", { class: "sc-panel", id: "sc-panel" })),
+  ];
 }
 
-function startRecording(action, button, note) {
-  if (recording) {
-    // Switching to another shortcut: shortcuts stay paused, just put the old button back.
-    recording.button.classList.remove("recording");
-    recording.button.replaceChildren(...recording.original);
-  } else {
-    // Bound shortcuts would otherwise fire instead of reaching this page.
-    invoke("pause_hotkeys", { paused: true }).catch(() => {});
+function renderShortcuts() {
+  const list = $("#sc-list"), panel = $("#sc-panel");
+  if (!list || !panel) return;
+  const hotkeys = snap.config.hotkeys;
+  $("#sc-reset").disabled = totalShortcuts() === 0;
+
+  list.replaceChildren(...SHORTCUT_GROUPS.map((g) => {
+    const assigned = g.actions.filter(([id]) => hotkeys[id]).length;
+    const flagged = conflict && groupOf(conflict.other) === g;
+    const b = h("button", { type: "button", class: "sc-item", "aria-current": g.id === shortcutChannel ? "true" : null },
+      g.color ? h("span", { class: "tape small", style: `--c:${g.color}` }, g.title) : h("span", { class: "sc-plain" }, g.title),
+      h("span", { class: "sc-count" }, flagged ? h("span", { class: "tabdot", title: "One of these clashes with the shortcut you just pressed" }) : null, `${assigned}/${g.actions.length}`));
+    b.addEventListener("click", () => {
+      shortcutChannel = g.id;
+      store.set("shortcutChannel", g.id);
+      if (recording) cancelRecording();
+      conflict = null;
+      renderShortcuts();
+    });
+    return b;
+  }));
+
+  const group = SHORTCUT_GROUPS.find((g) => g.id === shortcutChannel);
+  panel.replaceChildren(
+    h("div", { class: "sc-head" }, h("h3", {}, group.title), h("span", {}, "Click a shortcut, then press the keys")),
+    ...group.actions.map(([action, label]) => shortcutRow(action, label)));
+}
+
+function shortcutRow(action, label) {
+  const keys = snap.config.hotkeys[action];
+  const isRecording = recording?.action === action;
+  const clash = conflict?.action === action ? conflict : null;
+  const shown = clash ? clash.combo : keys;
+  const button = h("button", { type: "button", class: "keybind" + (isRecording ? " recording" : !shown ? " empty" : "") + (clash ? " clash" : ""),
+    "aria-label": `${label}: ${shown ? comboText(shown) : "not set"}. Change shortcut` },
+    ...(isRecording ? [h("span", { class: "recdot" }), "Press keys…"] : shown ? keycaps(shown) : ["Set"]));
+  button.addEventListener("click", () => startRecording(action));
+  const clear = keys && !isRecording ? h("button", { type: "button", class: "iconbtn keyclear", title: "Remove shortcut", "aria-label": `Remove shortcut for ${label}` }, "×") : h("span");
+  if (keys && !isRecording) clear.addEventListener("click", () => saveShortcut(action, null));
+
+  let note = null;
+  if (isRecording) {
+    note = h("div", { class: "sc-note" }, recordNote?.action === action ? recordNote.text : [h("kbd", {}, "Esc"), " cancels · ", h("kbd", {}, "Backspace"), " clears"]);
+  } else if (clash) {
+    const use = h("button", { type: "button", class: "btn" }, `Use here, clear ${groupOf(clash.other).title}`);
+    use.addEventListener("click", () => { conflict = null; saveShortcut(action, clash.combo); });
+    const again = h("button", { type: "button", class: "btn" }, "Pick another");
+    again.addEventListener("click", () => startRecording(action));
+    note = h("div", { class: "sc-note warn" },
+      h("span", {}, `${comboText(clash.combo)} is already `, h("b", {}, shortcutLabel(clash.other)), ". Only one can use it."),
+      h("span", { class: "sc-actions" }, use, again));
+  } else if (snap.hotkey_errors[action]) {
+    note = h("div", { class: "sc-note bad" }, snap.hotkey_errors[action]);
   }
-  recording = { action, button, note, original: [...button.childNodes] };
-  button.classList.add("recording");
-  button.replaceChildren("Press keys…");
-  note.textContent = "";
-  note.classList.remove("bad");
+  return h("div", { class: "sc-row" + (clash ? " clash" : ""), "data-action": action },
+    h("span", { class: "sc-label" }, label), button, clear, note);
+}
+
+function startRecording(action) {
+  // Bound shortcuts would otherwise fire instead of reaching this page.
+  if (!recording) invoke("pause_hotkeys", { paused: true }).catch(() => {});
+  recording = { action };
+  recordNote = null;
+  // A clash on another row stays until it's resolved there.
+  if (conflict?.action === action) conflict = null;
+  renderShortcuts();
+}
+
+/** Stops listening for keys and turns the shortcuts back on. */
+function cancelRecording() {
+  if (!recording) return Promise.resolve();
+  recording = null;
+  recordNote = null;
+  return invoke("pause_hotkeys", { paused: false }).then((errors) => { snap.hotkey_errors = errors; }).catch(() => {});
 }
 
 async function stopRecording() {
-  if (!recording) return;
-  recording = null;
-  snap.hotkey_errors = await invoke("pause_hotkeys", { paused: false }).catch(() => snap.hotkey_errors);
-  renderSettings();
+  await cancelRecording();
+  renderShortcuts();
 }
 
 async function saveShortcut(action, keys) {
   recording = null;
-  const previous = keys && Object.entries(snap.config.hotkeys).find(([a, k]) => k === keys && a !== action);
+  recordNote = null;
   try {
     snap.hotkey_errors = await invoke("set_hotkey", { action, keys });
     if (keys) {
@@ -1077,43 +1424,97 @@ async function saveShortcut(action, keys) {
     } else {
       delete snap.config.hotkeys[action];
     }
-    renderSettings();
-    if (previous) toast(`Moved from “${shortcutLabel(previous[0])}”`);
-  } catch (e) { showError(e); renderSettings(); }
+  } catch (e) { showError(e); }
+  renderShortcuts();
+}
+
+function confirmResetShortcuts() {
+  const count = totalShortcuts();
+  if (!count) return;
+  const cancel = h("button", { type: "button", class: "btn" }, "Cancel");
+  const clear = h("button", { type: "button", class: "btn hot" }, "Clear all");
+  const dialog = h("dialog", { class: "confirm", "aria-labelledby": "confirm-title" },
+    h("p", { id: "confirm-title" }, `Clear all ${count} shortcut${count === 1 ? "" : "s"}? This can't be undone.`),
+    h("div", { class: "confirm-actions" }, cancel, clear));
+  cancel.addEventListener("click", () => dialog.close());
+  clear.addEventListener("click", async () => {
+    dialog.close();
+    await cancelRecording();
+    conflict = null;
+    try {
+      snap.hotkey_errors = await invoke("clear_hotkeys");
+      snap.config.hotkeys = {};
+      toast("All shortcuts cleared");
+    } catch (e) { showError(e); }
+    renderShortcuts();
+  });
+  dialog.addEventListener("close", () => dialog.remove());
+  document.body.append(dialog);
+  dialog.showModal();
+  cancel.focus();
 }
 
 document.addEventListener("keydown", (e) => {
   if (!recording) return;
   e.preventDefault();
   e.stopPropagation();
-  const { action, button, note } = recording;
+  const { action } = recording;
+  const button = $(`[data-action="${CSS.escape(action)}"] .keybind`);
   const mods = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Super"].filter(Boolean);
   if (MODIFIER_CODES.has(e.code)) {
-    button.replaceChildren(...keycaps(mods.join("+")), "…");
+    button?.replaceChildren(...keycaps(mods.join("+")), "…");
     return;
   }
   if (!mods.length && e.code === "Escape") return stopRecording();
   if (!mods.length && (e.code === "Backspace" || e.code === "Delete")) return saveShortcut(action, null);
-  if (!SUPPORTED_KEY.test(e.code)) { note.textContent = "That key can't be used for a shortcut"; return; }
-  if (!mods.length && !BARE_OK.test(e.code)) { note.textContent = "Add Ctrl, Alt, Shift or Win to this key"; return; }
-  saveShortcut(action, [...mods, e.code].join("+"));
+  const note = (text) => { recordNote = { action, text }; renderShortcuts(); };
+  if (!SUPPORTED_KEY.test(e.code)) return note("That key can't be used for a shortcut. Try another.");
+  if (!mods.length && !BARE_OK.test(e.code)) return note("Add Ctrl, Alt, Shift or Win to this key.");
+  const combo = [...mods, e.code].join("+");
+  if (snap.config.hotkeys[action] === combo) return stopRecording();
+  // Checked before saving: a combo that's taken asks which action should keep it.
+  const other = Object.entries(snap.config.hotkeys).find(([a, k]) => k === combo && a !== action)?.[0];
+  if (other) {
+    cancelRecording().then(() => { conflict = { action, combo, other }; renderShortcuts(); });
+    return;
+  }
+  saveShortcut(action, combo);
 }, true);
 // Clicking elsewhere or leaving the window cancels recording.
-window.addEventListener("blur", () => stopRecording());
+window.addEventListener("blur", () => { if (recording) stopRecording(); });
 document.addEventListener("pointerdown", (e) => { if (recording && !e.target.closest(".keybind")) stopRecording(); }, true);
 
 function renderStatus() {
-  const entries = Object.entries(snap.status).sort(([a], [b]) => a.localeCompare(b));
-  const bad = entries.filter(([, v]) => v !== "running");
-  $("#pill-status").classList.toggle("warn", bad.length > 0);
-  $("#pill-status-text").textContent = bad.length ? `${bad.length} stream${bad.length > 1 ? "s" : ""} need attention` : "All streams running";
+  const bad = failingStreams().length;
+  $("#pill-status").classList.toggle("warn", bad > 0);
+  $("#pill-status-text").textContent = bad ? `${bad} ${bad === 1 ? "stream needs" : "streams need"} attention` : "All streams running";
   $("#pill-output").textContent = shortName(outputName());
-  const list = $("#status-list");
-  if (list) list.replaceChildren(...entries.flatMap(([k, v]) => [h("span", {}, k), h("span", { class: v === "running" ? "ok" : "bad" }, v === "running" ? "Running" : v)]));
+  const dot = $("#tabdot-devices");
+  if (dot) dot.hidden = !bad;
+  document.querySelectorAll("[data-health]").forEach(fillHealth);
+  // Devices shows the health card only while something is wrong, so add or drop it.
+  const onDevices = view === "settings" && settingsTab === "devices";
+  if (onDevices && Boolean(bad) !== Boolean($("#settings-panel [data-health]"))) renderSettings();
+  for (const key of Object.keys(deviceRows)) showDeviceRow(key);
 }
+
+async function refreshStatus() {
+  const next = await invoke("get_state");
+  snap.status = next.status;
+  renderStatus();
+}
+$("#pill-status").addEventListener("click", () => { setSettingsTab("devices"); setView("settings"); });
 
 // ---------- navigation & polling ----------
 function setView(next) {
+  // "settings:devices" opens Settings on that tab (the flyout's status pill asks for this).
+  const [name, tab] = next.split(":");
+  next = name;
+  if (tab && SETTINGS_TABS.some(([id]) => id === tab) && tab !== settingsTab) {
+    settingsTab = tab;
+    store.set("settingsTab", tab);
+    if (snap) renderSettings();
+  }
   view = next;
   for (const v of ["mixer", "apps", "mic", "settings"]) $(`#view-${v}`).hidden = v !== view;
   document.querySelectorAll(".rail button").forEach((b) => (b.dataset.view === view ? b.setAttribute("aria-current", "page") : b.removeAttribute("aria-current")));

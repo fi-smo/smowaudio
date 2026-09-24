@@ -12,24 +12,39 @@
       <span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
       <b>Smowaudio</b>
       <span class="spacer"></span>
-      <span class="dot" id="fly-status" title="All streams running"></span>
+      <button type="button" class="fly-status" id="fly-status" title="Open Settings → Devices"><span class="dot"></span><span id="fly-status-text">Starting</span></button>
     </div>
     <div class="fly-dev">
       <button type="button" class="fly-dev-btn" id="fly-output-btn" aria-expanded="false" aria-controls="fly-output-list">
+        <svg class="fly-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 10V8a5.5 5.5 0 0 1 11 0v2"/><rect x="2" y="9.5" width="3" height="4.5" rx="1"/><rect x="11" y="9.5" width="3" height="4.5" rx="1"/></svg>
         <span>Output</span><b id="fly-output">…</b>
         <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5"/></svg>
       </button>
       <div class="fly-dev-list" id="fly-output-list" role="listbox" aria-label="Output device" hidden></div>
     </div>
-    <div class="fly-rows" id="fly-rows"></div>
-    <div class="fly-mic">
-      <span class="tape">Mic</span>
-      <button type="button" class="btn mute" id="fly-mute" aria-pressed="false">Mute</button>
-      <label class="switch"><input type="checkbox" id="fly-listen"><span class="track"></span>Listen</label>
+    <div class="fly-panel" id="fly-rows"></div>
+    <div class="fly-panel fly-mic" id="fly-mic">
+      <span class="tape" style="--c: var(--mic)">Mic</span>
+      <div class="fly-mic-state">
+        <span id="fly-mic-text">…</span>
+        <span class="fly-level" aria-hidden="true"><i id="fly-mic-level"></i></span>
+      </div>
+      <div class="fly-mic-btns">
+        <button type="button" class="btn mute" id="fly-mute" aria-pressed="false">
+          <svg class="fly-icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5V15"/></svg>
+          Mute
+        </button>
+        <button type="button" class="btn listen" id="fly-listen" aria-pressed="false">
+          <svg class="fly-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 10V8a5.5 5.5 0 0 1 11 0v2"/><rect x="2" y="9.5" width="3" height="4.5" rx="1"/><rect x="11" y="9.5" width="3" height="4.5" rx="1"/></svg>
+          Listen
+        </button>
+      </div>
     </div>
     <div class="fly-foot">
       <button type="button" class="btn primary" data-open="mixer">Open mixer</button>
-      <button type="button" class="btn" data-open="settings">Settings</button>
+      <button type="button" class="btn fly-gear" data-open="settings" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/></svg>
+      </button>
     </div>
   </div>
   <script src="flyout.js"></script>

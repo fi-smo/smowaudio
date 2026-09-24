@@ -106,6 +106,7 @@ function makeFader(label, onInput) {
   el.addEventListener("pointermove", (e) => { if (el.hasPointerCapture(e.pointerId)) fromX(e.clientX); });
   el.addEventListener("lostpointercapture", () => delete el.dataset.dragging);
   el.addEventListener("dblclick", () => set(1));
+  el.addEventListener("wheel", (e) => { e.preventDefault(); set(v + (e.deltaY < 0 ? 0.02 : -0.02)); }, { passive: false });
   el.addEventListener("keydown", (e) => {
     const step = { ArrowRight: 0.02, ArrowUp: 0.02, ArrowLeft: -0.02, ArrowDown: -0.02, PageUp: 0.1, PageDown: -0.1 }[e.key];
     if (step !== undefined) { set(v + step); e.preventDefault(); }
@@ -117,20 +118,9 @@ function makeFader(label, onInput) {
   return el;
 }
 
-// Meter segments are real elements rather than a repeating gradient: the browser snaps elements to
-// whole pixels, so they stay even at 125 % or 150 % display scaling. The lit copy sits on top of the
-// dark one and is cut off at the level.
-const SEGMENTS = 30;
-function segments(lit) {
-  return h("span", { class: lit ? "segs lit" : "segs" }, ...Array.from({ length: SEGMENTS }, (_, k) =>
-    h("i", lit && k >= SEGMENTS * 0.85 ? { class: "hot" } : lit && k >= SEGMENTS * 0.7 ? { class: "warn" } : {})));
-}
-/** Rounds a meter percentage to whole segments, like LEDs. */
-const toSegment = (pct) => Math.round((pct / 100) * SEGMENTS) * (100 / SEGMENTS);
-
 // Built once and then updated in place, so a slider is never replaced under the mouse.
 const rows = [];
-const meters = []; // per channel: { lits, peaks, hold, holdAt }
+const meters = []; // per channel: { lit, peak, hold, holdAt, muted }
 
 function buildRows() {
   $("#fly-rows").replaceChildren(...CHANNELS.map((c, i) => {
@@ -138,24 +128,25 @@ function buildRows() {
     const out = h("output", {});
     const fader = makeFader(c.name, (v) => {
       settings().volume = v;
-      out.textContent = `${Math.round(v * 100)}%`;
+      if (!settings().muted) out.textContent = `${Math.round(v * 100)}%`;
       send(`ch${i}`, () => invoke("set_channel", { index: i, settings: settings() }));
     });
     const mute = h("button", { type: "button", class: "btn mute fly-mute" });
-    const lits = [segments(true), segments(true)];
-    const peaks = [h("i", { class: "peak" }), h("i", { class: "peak" })];
-    meters[i] = { lits, peaks, hold: [0, 0], holdAt: [0, 0] };
+    // One continuous meter under the fader: max of left and right, with the mixer's peak hold.
+    const lit = h("i", { class: "lit" }), peak = h("i", { class: "peak", hidden: "" });
+    meters[i] = { lit, peak, hold: 0, holdAt: 0, muted: false };
     const row = h("div", { class: "fly-row", style: `--c:${c.color}` },
-      h("span", { class: "tape" }, c.name), fader, out, mute,
-      h("div", { class: "fmeter", "aria-hidden": "true" },
-        h("span", { class: "hrow" }, segments(false), lits[0], peaks[0]),
-        h("span", { class: "hrow" }, segments(false), lits[1], peaks[1])));
+      h("span", { class: "tape" }, c.name),
+      h("div", { class: "fly-stack" }, fader, h("span", { class: "fly-level", "aria-hidden": "true" }, lit, peak)),
+      out, mute);
     const showMute = (muted) => {
       mute.setAttribute("aria-pressed", String(muted));
       mute.title = muted ? `Unmute ${c.name}` : `Mute ${c.name}`;
       mute.setAttribute("aria-label", mute.title);
       mute.innerHTML = muted ? SPEAKER_OFF : SPEAKER_ON;
       row.classList.toggle("muted", muted);
+      meters[i].muted = muted;
+      out.textContent = muted ? "Off" : `${Math.round(settings().volume * 100)}%`;
     };
     mute.addEventListener("click", () => {
       settings().muted = !settings().muted;
@@ -164,40 +155,70 @@ function buildRows() {
     });
     rows[i] = (s) => {
       fader.setValue(s.volume);
-      if (!("dragging" in fader.dataset)) out.textContent = `${Math.round(s.volume * 100)}%`;
       showMute(s.muted);
+      if (!s.muted && "dragging" in fader.dataset) out.textContent = `${Math.round(fader.getAttribute("aria-valuenow"))}%`;
     };
     return row;
   }));
 }
 
-function render() {
-  renderOutputs();
-  const bad = Object.values(snap.status).filter((v) => v !== "running").length;
-  $("#fly-status").classList.toggle("warn", bad > 0);
-  $("#fly-status").title = bad ? `${bad} stream${bad > 1 ? "s" : ""} need attention` : "All streams running";
+const deviceMissing = (reason) => /no physical audio device/i.test(reason ?? "");
 
-  if (!rows.length) buildRows();
-  snap.config.channels.forEach((c, i) => rows[i]?.(c.settings));
+/** Header pill: "All running", or the shortest useful reason. */
+function renderStatus() {
+  const bad = Object.entries(snap.status).filter(([, v]) => v !== "running");
+  const text = !bad.length ? "All running"
+    : bad.length > 1 ? `${bad.length} streams stopped`
+    : bad[0][0] === "Microphone" ? "Mic stopped"
+    : `${bad[0][0]} stopped`;
+  $("#fly-status-text").textContent = text;
+  $("#fly-status").classList.toggle("warn", bad.length > 0);
+  $("#fly-status").title = bad.length ? `${bad.map(([k, v]) => `${k}: ${v}`).join("\n")}\nOpen Settings → Devices` : "All streams running · Open Settings → Devices";
+}
 
+function renderMic() {
   const mic = snap.config.mic;
+  const state = snap.status.Microphone;
+  const missing = state !== undefined && state !== "running";
+  const name = snap.active_mic ? shortName(snap.active_mic) : "Automatic";
+  const text = state === undefined ? "No Virtual Mic cable set up"
+    : !missing ? `${mic.muted ? "Muted" : "Live"} · ${name}`
+    : deviceMissing(state) ? "No microphone found" : "Mic stopped";
+  const el = $("#fly-mic-text");
+  el.textContent = text;
+  el.title = missing ? state : snap.active_mic ?? "";
+  el.classList.toggle("warn", missing);
+  $("#fly-mic").classList.toggle("problem", missing);
+  micSilent = missing || mic.muted || state === undefined;
   const mute = $("#fly-mute");
   mute.setAttribute("aria-pressed", String(mic.muted));
-  mute.textContent = mic.muted ? "Muted" : "Mute";
-  $("#fly-listen").checked = mic.monitor;
+  mute.title = mic.muted ? "Unmute the mic" : "Mute the mic";
+  $("#fly-listen").setAttribute("aria-pressed", String(mic.monitor));
+  $("#fly-listen").title = mic.monitor ? "Stop hearing yourself" : "Hear your processed mic in your headphones";
+}
+let micSilent = true;
+
+function render() {
+  renderOutputs();
+  renderStatus();
+  if (!rows.length) buildRows();
+  snap.config.channels.forEach((c, i) => rows[i]?.(c.settings));
+  renderMic();
 }
 
 $("#fly-mute").addEventListener("click", () => {
   if (!snap) return;
   snap.config.mic.muted = !snap.config.mic.muted;
-  render();
+  renderMic();
   send("mic", () => invoke("set_mic", { settings: snap.config.mic }));
 });
-$("#fly-listen").addEventListener("change", (e) => {
+$("#fly-listen").addEventListener("click", () => {
   if (!snap) return;
-  snap.config.mic.monitor = e.target.checked;
+  snap.config.mic.monitor = !snap.config.mic.monitor;
+  renderMic();
   send("mic", () => invoke("set_mic", { settings: snap.config.mic }));
 });
+$("#fly-status").addEventListener("click", () => invoke("open_main_window", { view: "settings:devices" }));
 document.querySelectorAll("[data-open]").forEach((b) =>
   b.addEventListener("click", () => invoke("open_main_window", { view: b.dataset.open })));
 document.addEventListener("keydown", (e) => {
@@ -223,15 +244,16 @@ async function pollMeters() {
       m.channels.forEach((pair, i) => {
         const meter = meters[i];
         if (!meter) return;
-        pair.forEach((db, side) => {
-          const pct = meterPct(db);
-          meter.lits[side].style.setProperty("--lvl", `${toSegment(pct)}%`);
-          // Same peak hold as the mixer: hold for 0.9 s, then fall.
-          if (pct >= meter.hold[side]) { meter.hold[side] = pct; meter.holdAt[side] = now; }
-          else if (now - meter.holdAt[side] > 900) meter.hold[side] = Math.max(pct, meter.hold[side] - 2.5);
-          meter.peaks[side].style.setProperty("--pk", `${Math.min(toSegment(meter.hold[side]), 100 - 100 / SEGMENTS)}%`);
-        });
+        // A muted channel's meter stays empty.
+        const pct = meter.muted ? 0 : meterPct(Math.max(pair[0], pair[1]));
+        meter.lit.style.setProperty("--lvl", `${pct}%`);
+        // Same peak hold as the mixer: hold for 0.9 s, then fall.
+        if (pct >= meter.hold) { meter.hold = pct; meter.holdAt = now; }
+        else if (now - meter.holdAt > 900) meter.hold = Math.max(pct, meter.hold - 2.5);
+        meter.peak.style.setProperty("--pk", `${meter.hold}%`);
+        meter.peak.hidden = meter.hold <= 0;
       });
+      $("#fly-mic-level").style.setProperty("--lvl", `${micSilent ? 0 : meterPct(m.mic.output_db)}%`);
     } catch { /* engine restarting */ }
   }
   setTimeout(pollMeters, 50);

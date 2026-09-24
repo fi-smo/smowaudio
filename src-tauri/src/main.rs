@@ -112,6 +112,10 @@ struct Snapshot {
     capture_devices: Vec<DeviceInfo>,
     status: std::collections::HashMap<String, String>,
     hotkey_errors: BTreeMap<String, String>,
+    /// The headphones/speakers and microphone actually in use (also when following the Windows
+    /// default), for "Live · Headset Microphone" and similar. None if there is none.
+    active_output: Option<String>,
+    active_mic: Option<String>,
 }
 
 /// Runs a command's work on a background thread with COM ready. Commands that aren't async run on
@@ -139,13 +143,42 @@ fn get_config(state: State<AppState>) -> Config {
 
 fn get_state_now(state: &AppState) -> CmdResult<Snapshot> {
     let status = state.engine.lock().as_ref().map(|e| e.shared.status.lock().clone()).unwrap_or_default();
+    let config = state.config.lock().clone();
+    let active = |flow: Flow, id: &Option<String>| {
+        device::resolve_physical(flow, id.as_deref(), config.previous_default(flow).as_deref())
+            .ok()
+            .and_then(|d| device::friendly_name(&d).ok())
+    };
     Ok(Snapshot {
-        config: state.config.lock().clone(),
+        active_output: active(Flow::Render, &config.output_device),
+        active_mic: active(Flow::Capture, &config.mic_device),
+        config,
         render_devices: device::list(Flow::Render).map_err(err)?,
         capture_devices: device::list(Flow::Capture).map_err(err)?,
         status,
         hotkey_errors: state.hotkey_errors.lock().clone(),
     })
+}
+
+/// Restarts every audio stream ("Retry" in Settings when a stream has stopped).
+#[tauri::command]
+async fn restart_audio(app: AppHandle) {
+    background(app, |state| state.restart_engine()).await
+}
+
+/// Removes every keyboard shortcut ("Reset all" in Settings).
+#[tauri::command]
+async fn clear_hotkeys(app: AppHandle) -> BTreeMap<String, String> {
+    app.state::<AppState>().update(|c| c.hotkeys.clear());
+    hotkeys::register_all(&app)
+}
+
+/// Opens %APPDATA%\Smowaudio, where the log and config live.
+#[tauri::command]
+fn open_log_folder() -> CmdResult<()> {
+    let dir = std::env::var_os("APPDATA").map(|d| std::path::PathBuf::from(d).join("Smowaudio")).ok_or("APPDATA isn't set")?;
+    std::process::Command::new("explorer.exe").arg(dir).spawn().map_err(err)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -547,7 +580,7 @@ fn toggle_flyout_at_tray(app: &AppHandle) {
 }
 
 /// Starting size; the flyout page reports its real content height through `fit_flyout`.
-const FLYOUT_SIZE: (f64, f64) = (360.0, 330.0);
+const FLYOUT_SIZE: (f64, f64) = (320.0, 330.0);
 
 /// Sizes the flyout to its content (a CSS height), keeping its bottom edge above the taskbar.
 #[tauri::command]
@@ -719,6 +752,9 @@ fn main() {
             get_config,
             mic_test,
             update_status,
+            restart_audio,
+            clear_hotkeys,
+            open_log_folder,
             set_github_token,
             check_for_update,
             install_update,
