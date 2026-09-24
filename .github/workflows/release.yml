@@ -1,11 +1,21 @@
-# Builds a signed installer when a version tag (v1.2.3) is pushed, attaches it to a GitHub Release
-# and writes latest.json to the `updates` branch, which the app reads to offer the update.
+# Releases the version in src-tauri/tauri.conf.json when it changes on main: builds a signed
+# installer, publishes it as GitHub Release vX.Y.Z (creating the tag) and writes latest.json to the
+# `updates` branch, which the app reads to offer the update. Pushes that don't change the version
+# stop after a few seconds.
+# Runs on main rather than on tags because GitHub only shares build caches within a branch (or
+# from main): tag builds each started from scratch (~22 min instead of a few).
 # Only the repo's own GITHUB_TOKEN is needed; the signing key is the TAURI_SIGNING_PRIVATE_KEY secret.
 name: Release
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths: ["src-tauri/tauri.conf.json"]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -16,47 +26,70 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Check the tag matches the app version
+      - name: Find the version to release
+        id: version
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
-          if ("v$version" -ne $env:GITHUB_REF_NAME) {
-            throw "Tag $env:GITHUB_REF_NAME doesn't match version $version in src-tauri/tauri.conf.json"
-          }
           "VERSION=$version" >> $env:GITHUB_ENV
+          "TAG=v$version" >> $env:GITHUB_ENV
+          gh release view "v$version" --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            "v$version is already released; nothing to do."
+            "skip=true" >> $env:GITHUB_OUTPUT
+          } else {
+            "skip=false" >> $env:GITHUB_OUTPUT
+          }
+          exit 0
+
+      # Real-time scanning of every file the compiler writes slows Windows builds a lot. This is
+      # GitHub's throwaway build machine, not anyone's PC.
+      - name: Turn off Defender scanning on the build machine
+        if: steps.version.outputs.skip == 'false'
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
 
       - uses: actions/setup-node@v5
+        if: steps.version.outputs.skip == 'false'
         with:
           node-version: 20
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.version.outputs.skip == 'false'
 
       # The noise-removal engine takes most of the build; caching it cuts later builds a lot.
       - uses: Swatinem/rust-cache@v2
+        if: steps.version.outputs.skip == 'false'
         with:
           workspaces: src-tauri
+          shared-key: release
 
       - run: npm ci
+        if: steps.version.outputs.skip == 'false'
 
       - name: Build the signed installer
+        if: steps.version.outputs.skip == 'false'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: npx tauri build --config src-tauri/tauri.release.conf.json
 
       - name: Publish the release and the update manifest
+        if: steps.version.outputs.skip == 'false'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $repo = $env:GITHUB_REPOSITORY
-          $tag = $env:GITHUB_REF_NAME
+          $tag = $env:TAG
           $setup = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter "*_x64-setup.exe" | Select-Object -First 1
           if (-not $setup) { throw "The installer wasn't built" }
           $signature = (Get-Content "$($setup.FullName).sig" -Raw).Trim()
 
-          gh release create $tag $setup.FullName --title "Smowaudio $env:VERSION" --generate-notes
+          gh release create $tag $setup.FullName --target $env:GITHUB_SHA --title "Smowaudio $env:VERSION" --generate-notes
           if ($LASTEXITCODE -ne 0) { throw "Creating the release failed" }
 
           # The app downloads through the API (the repo is private), so it needs the asset's API URL.
