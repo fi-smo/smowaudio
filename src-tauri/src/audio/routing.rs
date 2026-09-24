@@ -209,6 +209,36 @@ pub fn list_apps() -> Result<Vec<AudioApp>> {
     Ok(apps.into_values().collect())
 }
 
+/// Current peak level of every app playing audio, by pid (the loudest of its sessions). Skips
+/// everything `list_apps` looks up about the process, so it's cheap to call many times a second.
+pub fn app_levels() -> Result<Vec<(u32, f32)>> {
+    let enumerator = device::enumerator()?;
+    let collection = unsafe { enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)? };
+    let mut levels: BTreeMap<u32, f32> = BTreeMap::new();
+    for i in 0..unsafe { collection.GetCount()? } {
+        let Ok(manager) = (unsafe { collection.Item(i)?.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) }) else {
+            continue;
+        };
+        let sessions = unsafe { manager.GetSessionEnumerator()? };
+        for j in 0..unsafe { sessions.GetCount()? } {
+            let Ok(control) = (unsafe { sessions.GetSession(j) }) else { continue };
+            let Ok(control) = control.cast::<IAudioSessionControl2>() else { continue };
+            let pid = unsafe { control.GetProcessId() }.unwrap_or(0);
+            if pid == 0 {
+                continue;
+            }
+            let peak = control
+                .cast::<IAudioMeterInformation>()
+                .ok()
+                .and_then(|meter| unsafe { meter.GetPeakValue() }.ok())
+                .unwrap_or(0.0);
+            let entry = levels.entry(pid).or_insert(0.0);
+            *entry = entry.max(peak);
+        }
+    }
+    Ok(levels.into_iter().collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

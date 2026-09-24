@@ -34,6 +34,59 @@ pub struct Meters {
     pub master_reduction_db: f32,
     /// Largest channel buffer right now, in ms (part of the playback delay).
     pub buffer_ms: f32,
+    pub mic_test: MicTestStatus,
+}
+
+/// Where the mic test is, for the Mic view.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct MicTestStatus {
+    /// "idle", "recording" or "playing".
+    pub phase: &'static str,
+    /// 0..1 through the recording or playback.
+    pub progress: f32,
+    /// A recording exists to play (again).
+    pub recorded: bool,
+    /// Playing the untouched mic rather than the processed one.
+    pub original: bool,
+}
+
+/// Length of a mic test recording.
+const MIC_TEST_SAMPLES: usize = 5 * 48_000;
+
+#[derive(Default, PartialEq)]
+enum MicTestPhase {
+    #[default]
+    Idle,
+    Recording,
+    Playing,
+}
+
+/// "Test mic": records a few seconds before and after the filters, then plays one back on the
+/// headphones through the monitor path. The mic thread drives it, so playback runs on the mic's
+/// own clock and needs no extra stream.
+#[derive(Default)]
+struct MicTest {
+    phase: MicTestPhase,
+    raw: Vec<f32>,
+    processed: Vec<f32>,
+    play_original: bool,
+    position: usize,
+}
+
+impl MicTest {
+    fn status(&self) -> MicTestStatus {
+        let (phase, progress) = match self.phase {
+            MicTestPhase::Idle => ("idle", 0.0),
+            MicTestPhase::Recording => ("recording", self.processed.len() as f32 / MIC_TEST_SAMPLES as f32),
+            MicTestPhase::Playing => ("playing", self.position as f32 / self.processed.len().max(1) as f32),
+        };
+        MicTestStatus {
+            phase,
+            progress,
+            recorded: self.phase != MicTestPhase::Recording && !self.processed.is_empty(),
+            original: self.play_original,
+        }
+    }
 }
 
 /// Settings slot the audio thread polls cheaply: it only locks when the version changed.
@@ -81,6 +134,9 @@ pub struct Shared {
     /// makes the output stream reopen on it without touching the other streams.
     output_device: Mutex<Option<String>>,
     output_generation: AtomicU64,
+    mic_test: Mutex<MicTest>,
+    /// The mic test is playing: the output mixes the monitor path even with listening off.
+    mic_test_playing: AtomicBool,
     pub meters: Mutex<Meters>,
     pub status: Mutex<HashMap<String, String>>,
 }
@@ -107,6 +163,8 @@ impl Engine {
             monitor: AtomicBool::new(config.mic.monitor),
             output_device: Mutex::new(config.output_device.clone()),
             output_generation: AtomicU64::new(0),
+            mic_test: Mutex::new(MicTest::default()),
+            mic_test_playing: AtomicBool::new(false),
             meters: Mutex::new(Meters::default()),
             status: Mutex::new(HashMap::new()),
         });
@@ -150,6 +208,48 @@ impl Engine {
         self.shared.output_generation.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Starts a 5 s mic test recording. Fails if there's no microphone running.
+    pub fn mic_test_record(&self) -> Result<()> {
+        match self.shared.status.lock().get("Microphone") {
+            Some(s) if s == "running" => {}
+            Some(problem) => anyhow::bail!("The microphone isn't working: {problem}"),
+            None => anyhow::bail!("Pick a Virtual Mic cable in Settings first"),
+        }
+        let mut test = self.shared.mic_test.lock();
+        // Allocated here so the audio thread never has to.
+        *test = MicTest {
+            phase: MicTestPhase::Recording,
+            raw: Vec::with_capacity(MIC_TEST_SAMPLES + FRAME),
+            processed: Vec::with_capacity(MIC_TEST_SAMPLES + FRAME),
+            ..MicTest::default()
+        };
+        self.shared.mic_test_playing.store(false, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Plays the last mic test recording, processed or as the mic heard it.
+    pub fn mic_test_play(&self, original: bool) -> Result<()> {
+        let mut test = self.shared.mic_test.lock();
+        if test.phase == MicTestPhase::Recording || test.processed.is_empty() {
+            anyhow::bail!("Record a test first");
+        }
+        test.phase = MicTestPhase::Playing;
+        test.play_original = original;
+        test.position = 0;
+        self.shared.mic_test_playing.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    pub fn mic_test_stop(&self) {
+        let mut test = self.shared.mic_test.lock();
+        if test.phase == MicTestPhase::Recording {
+            test.processed.clear();
+            test.raw.clear();
+        }
+        test.phase = MicTestPhase::Idle;
+        self.shared.mic_test_playing.store(false, Ordering::Relaxed);
+    }
+
     pub fn set_rules(&self, rules: BTreeMap<String, String>) {
         *self.shared.rules.lock() = rules;
     }
@@ -157,6 +257,7 @@ impl Engine {
     /// Current meters plus the largest channel buffer (a readout of playback delay).
     pub fn meters(&self) -> Meters {
         let mut meters = self.shared.meters.lock().clone();
+        meters.mic_test = self.shared.mic_test.lock().status();
         meters.buffer_ms = self
             .shared
             .bridges
@@ -312,7 +413,7 @@ impl Engine {
                     peaks[i] = chains[i].peak_db;
                     out.iter_mut().zip(buf.iter()).for_each(|(o, s)| *o += s);
                 }
-                if shared.monitor.load(Ordering::Relaxed) {
+                if shared.monitor.load(Ordering::Relaxed) || shared.mic_test_playing.load(Ordering::Relaxed) {
                     let frames = out.len() / 2;
                     if monitor_mono.len() < frames {
                         monitor_mono.resize(frames, 0.0);
@@ -352,6 +453,8 @@ impl Engine {
             chain: MicChain,
             seen: u64,
             frame: [f32; FRAME],
+            /// The frame before the filters, kept for the mic test.
+            raw: [f32; FRAME],
             filled: usize,
         }
 
@@ -362,7 +465,7 @@ impl Engine {
                 Ok(d) => chain.attach_denoiser(d),
                 Err(e) => log::error!("noise removal unavailable: {e:#}"),
             }
-            MicState { chain, seen: u64::MAX, frame: [0.0; FRAME], filled: 0 }
+            MicState { chain, seen: u64::MAX, frame: [0.0; FRAME], raw: [0.0; FRAME], filled: 0 }
         };
 
         let shared = self.shared.clone();
@@ -385,6 +488,7 @@ impl Engine {
                     if let Some(settings) = shared.mic.poll(&mut st.seen) {
                         st.chain.set(settings);
                     }
+                    st.raw = st.frame;
                     st.chain.process(&mut st.frame);
                     mic_stats.record_in(FRAME);
                     for s in st.frame.iter() {
@@ -392,9 +496,41 @@ impl Engine {
                             break;
                         }
                     }
-                    if shared.monitor.load(Ordering::Relaxed) {
+                    // While the mic test plays, it replaces what the monitor path hears. try_lock:
+                    // the UI only holds the lock for a moment, and a skipped frame is harmless.
+                    let mut test_frame: Option<[f32; FRAME]> = None;
+                    if let Some(mut test) = shared.mic_test.try_lock() {
+                        let test = &mut *test;
+                        match test.phase {
+                            MicTestPhase::Idle => {}
+                            MicTestPhase::Recording => {
+                                test.raw.extend_from_slice(&st.raw);
+                                test.processed.extend_from_slice(&st.frame);
+                                if test.processed.len() >= MIC_TEST_SAMPLES {
+                                    test.phase = MicTestPhase::Playing;
+                                    test.play_original = false;
+                                    test.position = 0;
+                                    shared.mic_test_playing.store(true, Ordering::Relaxed);
+                                }
+                            }
+                            MicTestPhase::Playing => {
+                                let source = if test.play_original { &test.raw } else { &test.processed };
+                                let mut frame = [0f32; FRAME];
+                                let end = (test.position + FRAME).min(source.len());
+                                frame[..end - test.position].copy_from_slice(&source[test.position..end]);
+                                test.position = end;
+                                if end >= source.len() {
+                                    test.phase = MicTestPhase::Idle;
+                                    shared.mic_test_playing.store(false, Ordering::Relaxed);
+                                }
+                                test_frame = Some(frame);
+                            }
+                        }
+                    }
+                    let live = shared.monitor.load(Ordering::Relaxed);
+                    if let Some(frame) = test_frame.as_ref().or(live.then_some(&st.frame)) {
                         monitor_stats.record_in(FRAME);
-                        for s in st.frame.iter() {
+                        for s in frame.iter() {
                             if monitor.push(*s).is_err() {
                                 break;
                             }

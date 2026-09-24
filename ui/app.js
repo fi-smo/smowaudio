@@ -293,6 +293,7 @@ async function refreshApps() {
 
 // ---------- mixer ----------
 const meterRefs = new Map(); // key -> { lits, peaks, hold, holdAt }
+const stripRefs = new Map(); // key -> update(volume, muted): shows changes made elsewhere
 const SCALE = [0, -6, -12, -24, -36, -48, -60];
 let eqOpen = null;
 
@@ -311,9 +312,12 @@ function makeFader(label, value, onInput) {
     render(); onInput(v);
   };
   const fromY = (y) => { const r = el.getBoundingClientRect(); set(clamp((r.bottom - 9 - y) / (r.height - 18), 0, 1) * MAX_VOLUME); };
-  el.addEventListener("pointerdown", (e) => { el.setPointerCapture(e.pointerId); fromY(e.clientY); });
+  el.addEventListener("pointerdown", (e) => { el.setPointerCapture(e.pointerId); el.dataset.dragging = ""; fromY(e.clientY); });
   el.addEventListener("pointermove", (e) => { if (el.hasPointerCapture(e.pointerId)) fromY(e.clientY); });
+  el.addEventListener("lostpointercapture", () => delete el.dataset.dragging);
   el.addEventListener("dblclick", () => set(1));
+  /** Shows a value changed elsewhere (flyout, shortcut) unless the user is dragging this fader. */
+  el.setValue = (next) => { if (!("dragging" in el.dataset)) { v = clamp(next, 0, MAX_VOLUME); render(); } };
   el.addEventListener("keydown", (e) => {
     const step = { ArrowUp: 0.02, ArrowDown: -0.02, PageUp: 0.1, PageDown: -0.1 }[e.key];
     if (step !== undefined) { set(v + step); e.preventDefault(); }
@@ -332,12 +336,14 @@ function strip({ key, name, color, sub, icons, volume, onVolume, muted, onMute, 
   showVolume(volume);
   const el = h("div", { class: "strip" + (muted ? " muted" : ""), style: `--c:${color}`, "data-strip": key });
   const mute = h("button", { type: "button", class: "btn mute", "aria-pressed": String(muted), title: `Mute ${name}` }, "M");
+  const showMuted = (m) => { mute.setAttribute("aria-pressed", String(m)); el.classList.toggle("muted", m); };
   mute.addEventListener("click", () => {
     const m = mute.getAttribute("aria-pressed") !== "true";
-    mute.setAttribute("aria-pressed", String(m));
-    el.classList.toggle("muted", m);
+    showMuted(m);
     onMute(m);
   });
+  const fader = makeFader(name, volume, (v) => { showVolume(v); onVolume(v); });
+  stripRefs.set(key, (v, m) => { fader.setValue(v); if (!("dragging" in fader.dataset)) showVolume(v); showMuted(m); });
   el.append(
     h("div", { class: "strip-top" }, tape(name), h("small", {}, sub)),
     h("div", { class: "appicons" }, icons),
@@ -345,7 +351,7 @@ function strip({ key, name, color, sub, icons, volume, onVolume, muted, onMute, 
       h("div", { class: "scale", "aria-hidden": "true" }, SCALE.map((d) => h("span", { style: `bottom:${meterPct(d)}%` }, String(d)))),
       h("div", { class: "meter", "aria-hidden": "true" },
         h("div", { class: "bar" }, lits[0], peaks[0]), h("div", { class: "bar" }, lits[1], peaks[1])),
-      makeFader(name, volume, (v) => { showVolume(v); onVolume(v); })),
+      fader),
     h("div", { class: "readout" }, db, pct),
     h("div", { class: "strip-btns" }, mute, extra));
   return el;
@@ -359,6 +365,7 @@ function cableLabel(id) {
 function renderMixer() {
   const root = $("#view-mixer");
   meterRefs.clear();
+  stripRefs.clear();
   const strips = h("div", { class: "strips" });
   CHANNELS.forEach((c, i) => {
     const cfg = snap.config.channels[i];
@@ -379,7 +386,7 @@ function renderMixer() {
   strips.append(h("div", { class: "divider", "aria-hidden": "true" }), strip({
     key: "mic", name: "Mic", color: "var(--mic)", sub: "Virtual Mic",
     icons: h("span", { class: "appnote" }, shortName(micDevice) || "Automatic"),
-    volume: clamp(Math.pow(10, mic.gain_db / 20), 0, MAX_VOLUME),
+    volume: micVolume(mic),
     onVolume: (v) => { mic.gain_db = v <= 0.001 ? -60 : Math.round(dbOf(v) * 10) / 10; sendMic(); },
     muted: mic.muted, onMute: (m) => { mic.muted = m; sendMic(); renderMicControls(); },
     extra: h("button", { type: "button", class: "btn", onclick: () => setView("mic") }, h("span", { class: "k" }, "Chain"), "Open"),
@@ -400,6 +407,21 @@ function renderMixer() {
     h("section", { class: "drawer", id: "eq-drawer", hidden: true }));
   renderDrawer();
   updateStripIcons();
+}
+
+const micVolume = (mic) => clamp(Math.pow(10, mic.gain_db / 20), 0, MAX_VOLUME);
+
+/** Brings the mixer strips in line with snap.config without rebuilding them. */
+function updateStrips() {
+  snap.config.channels.forEach((c, i) => {
+    stripRefs.get(`ch${i}`)?.(c.settings.volume, c.settings.muted);
+    const b = $(`[data-eq="${i}"]`);
+    if (b) b.replaceChildren(h("span", { class: "k" }, "EQ"), c.settings.eq.enabled ? c.settings.eq.preset : "Off");
+  });
+  stripRefs.get("mic")?.(micVolume(snap.config.mic), snap.config.mic.muted);
+  stripRefs.get("master")?.(snap.config.master.volume, snap.config.master.muted);
+  const outNote = $('[data-strip="master"] .appicons .appnote');
+  if (outNote) outNote.textContent = shortName(outputName());
 }
 
 function updateStripIcons() {
@@ -494,7 +516,8 @@ function appCard(app) {
   const card = h("div", { class: "appcard", draggable: "true", "data-exe": app.exe },
     appIcon(app, "icon"),
     h("span", { class: "title", title: app.name }, app.name),
-    h("span", { class: "activity", title: app.active ? "Playing" : "Silent" }, h("i", { "data-activity": app.exe })),
+    h("span", { class: "activity", "data-activity": app.exe, "aria-hidden": "true" }, h("i", { class: "lit" }), h("i", { class: "peak" })),
+    h("span", { class: "level num", "data-level-db": app.exe }, "−∞"),
     h("span", { class: "sub" }, h("em", {}, app.exe), where.chosen ? null : h("span", { class: "badge" }, "Default")),
     select);
   card.addEventListener("dragstart", (e) => { dragExe = app.exe; e.dataTransfer.setData("text/plain", app.exe); card.classList.add("dragging"); });
@@ -506,10 +529,35 @@ const signature = () => apps.map((a) => `${a.exe}:${channelOf(a).index}:${channe
 function updateLanes() {
   if (dragExe || document.activeElement?.tagName === "SELECT") return;
   if (signature() !== laneSignature) { renderApps(); }
-  for (const a of apps) {
-    const bar = document.querySelector(`[data-activity="${CSS.escape(a.exe)}"]`);
-    if (bar) bar.style.setProperty("--a", `${meterPct(dbOf(a.peak))}%`);
+}
+
+// Apps view meters: polled as often as the channel meters, with the same ballistics (instant rise,
+// smooth fall, a peak mark that holds), plus a dB readout.
+const appMeter = new Map(); // exe -> { db, hold, holdAt }
+async function pollAppLevels() {
+  if (view === "apps" && !document.hidden && apps.length) {
+    try {
+      const levels = new Map(await invoke("app_levels"));
+      const now = performance.now();
+      for (const a of apps) {
+        const peak = Math.max(0, ...a.pids.map((pid) => levels.get(pid) ?? 0));
+        const target = Math.max(-90, dbOf(peak));
+        const m = appMeter.get(a.exe) ?? { db: -90, hold: -90, holdAt: 0, at: now };
+        // Fall at about 26 dB/s, like a PPM; rise instantly.
+        m.db = Math.max(target, m.db - 0.026 * (now - m.at));
+        m.at = now;
+        if (target >= m.hold) { m.hold = target; m.holdAt = now; } else if (now - m.holdAt > 900) m.hold = Math.max(m.db, m.hold - 0.03 * 50);
+        appMeter.set(a.exe, m);
+        const bar = document.querySelector(`[data-activity="${CSS.escape(a.exe)}"]`);
+        if (!bar) continue;
+        bar.style.setProperty("--lvl", `${meterPct(m.db)}%`);
+        bar.style.setProperty("--pk", `${meterPct(m.hold)}%`);
+        const readout = document.querySelector(`[data-level-db="${CSS.escape(a.exe)}"]`);
+        if (readout) readout.textContent = m.hold <= -60 ? "−∞" : `${fmtDb(m.hold)} dB`;
+      }
+    } catch { /* devices changing */ }
   }
+  setTimeout(pollAppLevels, 50);
 }
 
 async function moveApp(exe, channel) {
@@ -550,7 +598,7 @@ function renderMic() {
   const listen = switchEl("Listen to my mic", mic.monitor, (v) => { mic.monitor = v; sendMic(); });
   listen.el.style.setProperty("--c", "var(--mic)");
   const mute = h("button", { type: "button", class: "btn mute", id: "mic-mute", "aria-pressed": String(mic.muted) }, mic.muted ? "Mic muted" : "Mute mic");
-  mute.addEventListener("click", () => { mic.muted = !mic.muted; sendMic(); renderMicControls(); renderMixer(); });
+  mute.addEventListener("click", () => { mic.muted = !mic.muted; sendMic(); renderMicControls(); updateStrips(); });
 
   const chain = h("div", { class: "chain", id: "chain", role: "group", "aria-label": "Signal chain" });
   const levels = h("section", { class: "pane" },
@@ -559,7 +607,8 @@ function renderMic() {
     hmeter("Virtual Mic output", "mic-out"),
     h("div", { class: "hscale", "aria-hidden": "true" }, ["−60", "−48", "−36", "−24", "−12", "0 dBFS"].map((t) => h("span", {}, t))),
     hmeter("Compressor gain reduction", "mic-gr", false, true),
-    h("p", { class: "hint" }, "The white mark on the input meter is the gate threshold: speech above it passes, room noise below it is cut."));
+    h("p", { class: "hint" }, "The white mark on the input meter is the gate threshold: speech above it passes, room noise below it is cut."),
+    micTestPanel());
 
   root.replaceChildren(
     viewHead("Microphone", "Your voice runs through each step from left to right before Discord, OBS or TeamSpeak hear it. Select a step to adjust it."),
@@ -572,6 +621,43 @@ function renderMic() {
     h("div", { class: "detail" }, h("section", { class: "pane", id: "node-detail" }), levels));
   renderChain();
   renderNodeDetail();
+}
+
+// ---------- mic test ----------
+function micTestPanel() {
+  const button = (id, label, action) => {
+    const b = h("button", { type: "button", class: "btn", id }, label);
+    b.addEventListener("click", () => invoke("mic_test", { action }).catch(showError));
+    return b;
+  };
+  return h("div", { class: "mictest", id: "mic-test" },
+    h("h4", {}, "Test your mic"),
+    h("p", { class: "hint", id: "mic-test-hint" }, "Records 5 seconds, then plays it back on your headphones with every filter applied. Play the original to hear the difference."),
+    h("div", { class: "mictest-row" },
+      button("mic-test-record", "Record 5 s", "record"),
+      button("mic-test-play", "Play filtered", "play"),
+      button("mic-test-original", "Play original", "play_original"),
+      button("mic-test-stop", "Stop", "stop")),
+    h("div", { class: "mictest-bar", "aria-hidden": "true" }, h("i", { id: "mic-test-progress" })));
+}
+
+function updateMicTest(t) {
+  const panel = $("#mic-test");
+  if (!panel || !t) return;
+  const muted = snap.config.mic.muted;
+  const busy = t.phase !== "idle";
+  $("#mic-test-record").disabled = busy || muted;
+  $("#mic-test-record").textContent = t.phase === "recording" ? `Recording… ${Math.ceil(5 * (1 - t.progress))} s` : "Record 5 s";
+  $("#mic-test-play").disabled = busy || !t.recorded;
+  $("#mic-test-original").disabled = busy || !t.recorded;
+  $("#mic-test-stop").disabled = !busy;
+  $("#mic-test-progress").style.width = `${busy ? t.progress * 100 : 0}%`;
+  panel.dataset.phase = t.phase;
+  const hint = $("#mic-test-hint");
+  hint.textContent = muted ? "Your mic is muted. Unmute it to record a test."
+    : t.phase === "recording" ? "Speak normally, the way you would in Discord."
+    : t.phase === "playing" ? (t.original ? "Playing your mic without any filters." : "Playing with every filter applied, as others hear you.")
+    : "Records 5 seconds, then plays it back on your headphones with every filter applied. Play the original to hear the difference.";
 }
 
 function hmeter(label, id, marker = false, gr = false) {
@@ -689,7 +775,11 @@ function outputName() {
   return deviceName(snap.render_devices, snap.config.output_device) || "Automatic";
 }
 
+// Device choices picked in Settings but not applied yet; changes from elsewhere mustn't wipe them.
+let settingsDirty = false;
+
 function renderSettings() {
+  settingsDirty = false;
   const root = $("#view-settings");
   const cfg = snap.config;
   const physical = (list) => list.filter((d) => !isVirtual(d));
@@ -698,6 +788,7 @@ function renderSettings() {
     const s = h("select", { class: "input", "aria-label": label },
       h("option", { value: "" }, emptyLabel),
       ...list.map((d) => { const o = h("option", { value: d.id }, d.name); o.selected = d.id === value; return o; }));
+    s.addEventListener("change", () => { settingsDirty = true; });
     return { el: h("label", { class: "field" }, h("span", {}, label), s, hint ? h("p", { class: "hint" }, hint) : null), s };
   };
   const output = select("Headphones / speakers", physical(snap.render_devices), cfg.output_device, "Automatic (your usual default)");
@@ -917,6 +1008,42 @@ async function loadState() {
   renderStatus();
 }
 
+const isObj = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
+/** Copies `src` into `target` in place, so everything holding a piece of snap.config stays valid. */
+function mergeInto(target, src) {
+  for (const k of Object.keys(target)) if (!(k in src)) delete target[k];
+  for (const [k, v] of Object.entries(src)) {
+    const t = target[k];
+    if (Array.isArray(v) && Array.isArray(t) && t.length === v.length) {
+      v.forEach((x, i) => { if (isObj(x) && isObj(t[i])) mergeInto(t[i], x); else t[i] = x; });
+    } else if (Array.isArray(v) && Array.isArray(t)) {
+      t.length = 0; t.push(...v);
+    } else if (isObj(v) && isObj(t)) {
+      mergeInto(t, v);
+    } else {
+      target[k] = v;
+    }
+  }
+}
+
+const settingsKey = (c) => JSON.stringify([c.output_device, c.mic_device, c.mic_sink, c.channels.map((x) => x.source),
+  c.launch_at_login, c.set_windows_defaults, c.hotkeys, c.volume_step]);
+const micKey = (m) => JSON.stringify({ ...m, gain_db: 0, muted: false });
+
+/** Picks up settings changed by the flyout or a shortcut, updating only what changed. */
+async function syncConfig() {
+  const next = await invoke("get_config");
+  const before = { settings: settingsKey(snap.config), mic: micKey(snap.config.mic), eq: snap.config.channels.map((c) => JSON.stringify(c.settings.eq)) };
+  mergeInto(snap.config, next);
+  updateStrips();
+  renderMicControls();
+  if (eqOpen !== null && JSON.stringify(snap.config.channels[eqOpen].settings.eq) !== before.eq[eqOpen]) renderDrawer();
+  if (micKey(snap.config.mic) !== before.mic) renderMic();
+  if (settingsKey(snap.config) !== before.settings && !settingsDirty && !recording) renderSettings();
+  updateStripIcons();
+  renderStatus();
+}
+
 async function pollMeters() {
   if (!document.hidden && snap) {
     try {
@@ -928,7 +1055,7 @@ async function pollMeters() {
       if (buffer) buffer.textContent = m.buffer_ms ? `${Math.round(m.buffer_ms)} ms` : "–";
       const limit = $("#limit-readout");
       if (limit) limit.textContent = `${fmtDb(m.master_reduction_db)} dB`;
-      if (view === "mic") updateMicMeters(m.mic);
+      if (view === "mic") { updateMicMeters(m.mic); updateMicTest(m.mic_test); }
     } catch { /* engine restarting */ }
   }
   setTimeout(pollMeters, 50);
@@ -939,17 +1066,25 @@ async function pollApps() {
   setTimeout(pollApps, view === "apps" ? 900 : 3000);
 }
 
+// Stream status, and devices plugged in or removed.
+const deviceKey = (x) => JSON.stringify([x.render_devices, x.capture_devices]);
 setInterval(async () => {
   if (document.hidden || !snap) return;
   try {
     const next = await invoke("get_state");
     snap.status = next.status;
+    if (deviceKey(next) !== deviceKey(snap)) {
+      snap.render_devices = next.render_devices;
+      snap.capture_devices = next.capture_devices;
+      if (!settingsDirty && !recording) renderSettings();
+      updateStrips();
+    }
     renderStatus();
   } catch { /* ignore */ }
 }, 3000);
 
-// Settings changed in the tray flyout while this window was in the background.
-window.addEventListener("focus", () => { if (snap && !document.querySelector(".fader:active")) loadState().catch(showError); });
+// Anything changed while this window was in the background.
+window.addEventListener("focus", () => { if (snap) syncConfig().catch(showError); });
 listen("show-view", (e) => setView(e.payload));
 // The tray flyout or a shortcut changed settings: show it right away. Changes made here are
 // skipped (so a fader being dragged isn't redrawn), and bursts, like a held volume shortcut,
@@ -959,7 +1094,7 @@ listen("config-changed", (e) => {
   if (e.payload?.source === "main" || reloadTimer) return;
   reloadTimer = setTimeout(() => {
     reloadTimer = null;
-    if (!recording) loadState().catch(showError);
+    if (snap) syncConfig().catch(showError);
   }, 120);
 });
 
@@ -972,4 +1107,5 @@ listen("config-changed", (e) => {
   } catch (e) { showError(e); }
   pollMeters();
   pollApps();
+  pollAppLevels();
 })();

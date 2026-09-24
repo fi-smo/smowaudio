@@ -109,9 +109,30 @@ struct Snapshot {
     hotkey_errors: BTreeMap<String, String>,
 }
 
+/// Runs a command's work on a background thread with COM ready. Commands that aren't async run on
+/// the main thread, which also drives the tray and every window, so anything slow freezes them.
+async fn background<T: Send + 'static>(app: AppHandle, f: impl FnOnce(&AppState) -> T + Send + 'static) -> T {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _com = audio::ComGuard::new();
+        f(&app.state::<AppState>())
+    })
+    .await
+    .expect("background command panicked")
+}
+
 #[tauri::command]
-fn get_state(state: State<AppState>) -> CmdResult<Snapshot> {
-    let _com = audio::ComGuard::new();
+async fn get_state(app: AppHandle) -> CmdResult<Snapshot> {
+    background(app, get_state_now).await
+}
+
+/// Just the settings, without listing devices: what the windows reload when another window or a
+/// shortcut changed something.
+#[tauri::command]
+fn get_config(state: State<AppState>) -> Config {
+    state.config.lock().clone()
+}
+
+fn get_state_now(state: &AppState) -> CmdResult<Snapshot> {
     let status = state.engine.lock().as_ref().map(|e| e.shared.status.lock().clone()).unwrap_or_default();
     Ok(Snapshot {
         config: state.config.lock().clone(),
@@ -120,6 +141,23 @@ fn get_state(state: State<AppState>) -> CmdResult<Snapshot> {
         status,
         hotkey_errors: state.hotkey_errors.lock().clone(),
     })
+}
+
+/// Mic test: "record" (5 s, before and after processing), "play" / "play_original", or "stop".
+#[tauri::command]
+fn mic_test(state: State<AppState>, action: String) -> CmdResult<()> {
+    let engine = state.engine.lock();
+    let engine = engine.as_ref().ok_or("Audio isn't running")?;
+    match action.as_str() {
+        "record" => engine.mic_test_record(),
+        "play" => engine.mic_test_play(false),
+        "play_original" => engine.mic_test_play(true),
+        _ => {
+            engine.mic_test_stop();
+            Ok(())
+        }
+    }
+    .map_err(err)
 }
 
 #[tauri::command]
@@ -210,14 +248,24 @@ fn set_volume_step(state: State<AppState>, step: f32) {
 }
 
 #[tauri::command]
-fn set_devices(
-    state: State<AppState>,
+async fn set_devices(
+    app: AppHandle,
     output: Option<String>,
     mic: Option<String>,
     mic_sink: Option<String>,
     sources: Vec<Option<String>>,
 ) {
-    let _com = audio::ComGuard::new();
+    background(app, move |state| set_devices_now(state, output, mic, mic_sink, sources)).await
+}
+
+/// Stops and restarts every stream, which takes a moment. Needs COM.
+fn set_devices_now(
+    state: &AppState,
+    output: Option<String>,
+    mic: Option<String>,
+    mic_sink: Option<String>,
+    sources: Vec<Option<String>>,
+) {
     let sinks: Vec<Option<String>> = sources.iter().map(|s| s.as_deref().and_then(cable_partner)).collect();
     state.update(|c| {
         c.output_device = output;
@@ -255,9 +303,8 @@ fn apply_windows_defaults(config: &mut Config) -> bool {
 }
 
 #[tauri::command]
-fn set_windows_defaults(state: State<AppState>, enabled: bool) -> CmdResult<()> {
-    let _com = audio::ComGuard::new();
-    set_windows_defaults_enabled(&state, enabled)
+async fn set_windows_defaults(app: AppHandle, enabled: bool) -> CmdResult<()> {
+    background(app, move |state| set_windows_defaults_enabled(state, enabled)).await
 }
 
 /// Turns Sonar-style Windows defaults on, or off by restoring the user's own. Needs COM.
@@ -277,9 +324,15 @@ fn set_windows_defaults_enabled(state: &AppState, enabled: bool) -> CmdResult<()
 }
 
 #[tauri::command]
-fn list_apps() -> CmdResult<Vec<AudioApp>> {
-    let _com = audio::ComGuard::new();
-    routing::list_apps().map_err(err)
+async fn list_apps(app: AppHandle) -> CmdResult<Vec<AudioApp>> {
+    background(app, |_| routing::list_apps().map_err(err)).await
+}
+
+/// Each app's current level (pid, peak 0..1), cheap enough for the Apps view's meters to poll
+/// as often as the channel meters.
+#[tauri::command]
+async fn app_levels(app: AppHandle) -> CmdResult<Vec<(u32, f32)>> {
+    background(app, |_| routing::app_levels().map_err(err)).await
 }
 
 /// The app's own icon as a PNG data URL, extracted off the UI thread and cached.
@@ -290,8 +343,11 @@ async fn app_icon(path: String) -> Option<String> {
 
 /// Routes an app to a channel (or back to the Windows default with `None`) and remembers it.
 #[tauri::command]
-fn assign_app(state: State<AppState>, pid: u32, exe: String, channel: Option<usize>) -> CmdResult<()> {
-    let _com = audio::ComGuard::new();
+async fn assign_app(app: AppHandle, pid: u32, exe: String, channel: Option<usize>) -> CmdResult<()> {
+    background(app, move |state| assign_app_now(state, pid, exe, channel)).await
+}
+
+fn assign_app_now(state: &AppState, pid: u32, exe: String, channel: Option<usize>) -> CmdResult<()> {
     let config = state.update(|c| match channel {
         Some(ch) => {
             c.app_rules.insert(exe.clone(), ch);
@@ -314,7 +370,12 @@ fn assign_app(state: State<AppState>, pid: u32, exe: String, channel: Option<usi
 /// Starts Smowaudio in the tray at sign-in through a Task Scheduler task. Task Scheduler
 /// launches immediately at logon, while Explorer's Run-key startup can skip entries entirely.
 #[tauri::command]
-fn set_launch_at_login(state: State<AppState>, enabled: bool) -> CmdResult<()> {
+async fn set_launch_at_login(app: AppHandle, enabled: bool) -> CmdResult<()> {
+    background(app, move |state| set_launch_at_login_now(state, enabled)).await
+}
+
+/// Runs PowerShell, which takes about a second.
+fn set_launch_at_login_now(state: &AppState, enabled: bool) -> CmdResult<()> {
     let script = if enabled {
         let exe = std::env::current_exe().map_err(err)?.display().to_string().replace('\'', "''");
         format!(
@@ -598,6 +659,9 @@ fn main() {
             set_channel,
             set_devices,
             list_apps,
+            app_levels,
+            get_config,
+            mic_test,
             app_icon,
             assign_app,
             set_launch_at_login,

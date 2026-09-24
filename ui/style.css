@@ -230,7 +230,7 @@ select.input {
 .lane-head small { color: var(--faint); font: 12px var(--font-num); }
 .lane .empty { color: var(--faint); font-size: 12px; padding: 6px 2px; }
 .appcard {
-  display: grid; grid-template-columns: 30px minmax(0, 1fr) 5px; gap: 4px 10px; align-items: center;
+  display: grid; grid-template-columns: 30px minmax(0, 1fr) 8px; gap: 4px 10px; align-items: center;
   border: 1px solid var(--line); background: var(--raised); border-radius: 7px; padding: 8px; cursor: grab;
 }
 .appcard:active { cursor: grabbing; }
@@ -243,14 +243,26 @@ select.input {
 .appcard .icon img { width: 28px; height: 28px; display: block; object-fit: contain; -webkit-user-drag: none; }
 .appicon img { width: 18px; height: 18px; display: block; object-fit: contain; -webkit-user-drag: none; }
 /* Pinned to the text column: the System sounds card has no meter, so auto-placement would push its sub line into the meter column. */
-.appcard .title, .appcard .sub { grid-column: 2; }
+.appcard .title { grid-column: 2; grid-row: 1; }
+.appcard .sub { grid-column: 2; grid-row: 2; }
+.appcard .level { grid-column: 2; grid-row: 3; justify-self: end; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .appcard .title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .appcard .sub { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--faint); font: 11px var(--font-num); }
 .appcard .sub em { font-style: normal; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Vertical level meter down the card's right edge, filling from the bottom. */
-.activity { grid-column: 3; grid-row: 1 / span 3; align-self: stretch; width: 5px; border-radius: 2px; background: var(--well); overflow: hidden; position: relative; }
-.activity i { position: absolute; left: 0; right: 0; bottom: 0; height: var(--a, 0%); background: var(--c); }
-.appcard select { grid-column: 2; justify-self: start; margin-top: 2px; border: 1px solid var(--line); background: var(--panel); border-radius: 5px; padding: 1px 4px; font-size: 11px; color: var(--muted); }
+/* Level meter down the card's right edge: the channel meters' segments, colours and peak mark. */
+.activity {
+  grid-column: 3; grid-row: 1 / span 3; align-self: stretch; width: 8px; position: relative; border-radius: 1px;
+  background: repeating-linear-gradient(to top, var(--seg-off) 0 3px, transparent 3px 5px);
+}
+.activity .lit {
+  position: absolute; inset: 0;
+  background: linear-gradient(to top, var(--ok) 0 70%, var(--warn) 70% 85%, var(--hot) 85% 100%);
+  -webkit-mask: repeating-linear-gradient(to top, #000 0 3px, transparent 3px 5px);
+          mask: repeating-linear-gradient(to top, #000 0 3px, transparent 3px 5px);
+  clip-path: inset(calc(100% - var(--lvl, 0%)) 0 0 0);
+}
+.activity .peak { position: absolute; left: 0; right: 0; height: 2px; bottom: var(--pk, 0%); background: var(--text); opacity: .75; }
+.appcard select { grid-row: 3; grid-column: 2; justify-self: start; margin-top: 2px; border: 1px solid var(--line); background: var(--panel); border-radius: 5px; padding: 1px 4px; font-size: 11px; color: var(--muted); }
 .badge { font: 600 10px/1 var(--font-ui); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 3px 5px; }
 
 /* ---------- microphone ---------- */
@@ -366,15 +378,43 @@ html:has(body.flyout-body), body.flyout-body { background: transparent; }
 .fly-dev-list button[aria-selected="true"]::before { background: var(--ok); }
 .fly-dev-list button[aria-selected="true"] { font-weight: 500; }
 .fly-rows { display: grid; gap: 10px; }
-.fly-row { --c: var(--game); display: grid; grid-template-columns: 58px minmax(0, 1fr) 40px 28px; gap: 2px 10px; align-items: center; }
+.fly-row { --c: var(--game); display: grid; grid-template-columns: 58px minmax(0, 1fr) 40px 28px; gap: 3px 10px; align-items: center; }
 .fly-mute { width: 28px; height: 24px; padding: 0; display: grid; place-items: center; }
 .fly-mute svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
-.fly-row.muted input[type="range"], .fly-row.muted output, .fly-row.muted .thin { opacity: .45; }
+.fly-row.muted .hfader .fill, .fly-row.muted .hfader .cap::after, .fly-row.muted output, .fly-row.muted .hbar .lit { opacity: .3; }
 .fly-row .tape, .fly-mic .tape { font-size: 13px; padding: 0 6px; justify-self: start; }
-.fly-row input[type="range"] { margin: 0; width: 100%; accent-color: var(--c); }
+/* Horizontal fader: same groove, colour fill, unity mark and cap as the mixer's. */
+.hfader { position: relative; height: 22px; touch-action: none; cursor: ew-resize; border-radius: 5px; }
+.hfader:focus-visible { outline-offset: 1px; }
+.hfader::before {
+  content: ""; position: absolute; top: 50%; left: 9px; right: 9px; height: 4px; transform: translateY(-50%);
+  background: var(--well); border: 1px solid var(--line); border-radius: 2px;
+}
+.hfader .unity { position: absolute; top: 3px; bottom: 3px; width: 1px; background: var(--line-strong); left: calc(9px + (100% - 18px) * 0.6667); }
+.hfader .fill {
+  position: absolute; top: 50%; left: 9px; height: 4px; transform: translateY(-50%);
+  width: calc((100% - 18px) * var(--p, 0.6667)); background: var(--c); border-radius: 2px; opacity: .9;
+}
+.hfader .cap {
+  position: absolute; top: 50%; width: 14px; height: 20px; transform: translate(-50%, -50%);
+  left: calc(9px + (100% - 18px) * var(--p, 0.6667));
+  background: linear-gradient(90deg, var(--raised), var(--panel)); border: 1px solid var(--line-strong); border-radius: 4px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.18);
+}
+.hfader .cap::after { content: ""; position: absolute; top: 4px; bottom: 4px; left: 50%; width: 2px; margin-left: -1px; background: var(--c); border-radius: 1px; }
+/* Segmented stereo meter under the fader, with the mixer's colours and peak mark. */
+.hbar { grid-column: 2; display: grid; gap: 2px; margin: 0 9px; }
+.hbar > span { position: relative; height: 3px; background: repeating-linear-gradient(to right, var(--seg-off) 0 3px, transparent 3px 5px); }
+.hbar .lit {
+  position: absolute; inset: 0;
+  background: linear-gradient(to right, var(--ok) 0 70%, var(--warn) 70% 85%, var(--hot) 85% 100%);
+  -webkit-mask: repeating-linear-gradient(to right, #000 0 3px, transparent 3px 5px);
+          mask: repeating-linear-gradient(to right, #000 0 3px, transparent 3px 5px);
+  clip-path: inset(0 calc(100% - var(--lvl, 0%)) 0 0);
+}
+.hbar .peak { position: absolute; top: -1px; bottom: -1px; width: 2px; left: var(--pk, 0%); background: var(--text); opacity: .75; }
 .fly-row output { font: 12px var(--font-num); text-align: right; font-variant-numeric: tabular-nums; }
-.fly-row .thin { grid-column: 2; height: 3px; border-radius: 2px; background: var(--well); overflow: hidden; }
-.fly-row .thin i { display: block; height: 100%; width: var(--a, 0%); background: var(--c); }
+
 /* Same first column as the channel rows, so the Mic tape lines up with the ones above it. */
 .fly-mic { --c: var(--mic); display: grid; grid-template-columns: 58px auto 1fr; gap: 10px; align-items: center; padding-top: 12px; border-top: 1px solid var(--line); }
 .fly-mic .switch { justify-self: end; }
@@ -422,3 +462,15 @@ body.osd-body { padding: 8px 8px 16px; display: flex; justify-content: flex-end;
 .osd.dim .osd-value { color: var(--hot); }
 .osd.dim .tape { filter: saturate(.25); }
 @media (prefers-reduced-motion: reduce) { .osd, .osd.shown { transition: none; transform: none; } }
+
+/* ---------- mic test ---------- */
+.mictest { display: grid; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.mictest h4 { margin: 0; font-size: 13px; font-weight: 600; }
+.mictest .hint { margin: 0; }
+.mictest-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.mictest-row .btn { text-align: center; }
+.mictest-row .btn:disabled { opacity: .45; cursor: default; }
+.mictest[data-phase="recording"] #mic-test-record { border-color: var(--hot); color: var(--hot); }
+.mictest-bar { height: 4px; border-radius: 2px; background: var(--well); overflow: hidden; }
+.mictest-bar i { display: block; height: 100%; width: 0; background: var(--mic); transition: width .1s linear; }
+.mictest[data-phase="recording"] .mictest-bar i { background: var(--hot); }
