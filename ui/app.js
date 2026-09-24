@@ -820,9 +820,120 @@ function renderSettings() {
         defaults.el, h("p", { class: "hint" }, "Like Sonar: Game becomes the default playback device, Chat the communications device and the Virtual Mic the recording device. Turning this off restores the defaults you had before.")),
       h("section", { class: "pane" }, h("h3", {}, "Audio streams"), statusList,
         h("p", { class: "hint" }, "Problems are also written to %APPDATA%\\Smowaudio\\smowaudio.log.")),
+      updatesPane(),
       shortcutsPane()));
   renderStatus();
+  refreshUpdates();
 }
+
+// ---------- updates ----------
+const TOKEN_PAGE = "https://github.com/settings/personal-access-tokens/new";
+let updateStatus = null;
+let installing = false;
+
+function updatesPane() {
+  const input = h("input", { class: "input", id: "update-token", type: "password", autocomplete: "off", spellcheck: "false", placeholder: "github_pat_…" });
+  // A half-typed token counts as an unapplied edit, so background refreshes don't wipe it.
+  input.addEventListener("input", () => { settingsDirty = true; });
+  const save = h("button", { type: "button", class: "btn" }, "Save token");
+  save.addEventListener("click", async () => {
+    try {
+      updateStatus = await invoke("set_github_token", { token: input.value });
+      input.value = "";
+      renderUpdates();
+      toast(updateStatus.token_hint ? "Token saved in Windows Credential Manager" : "Token removed");
+      if (updateStatus.token_hint) checkUpdates();
+    } catch (e) { showError(e); }
+  });
+  const remove = h("button", { type: "button", class: "iconbtn", id: "update-token-remove" }, "Remove");
+  remove.addEventListener("click", async () => {
+    try { updateStatus = await invoke("set_github_token", { token: "" }); renderUpdates(); toast("Token removed"); } catch (e) { showError(e); }
+  });
+  const link = h("button", { type: "button", class: "linkbtn" }, "Create a token on GitHub");
+  link.addEventListener("click", () => invoke("open_url", { url: TOKEN_PAGE }).catch(showError));
+  const check = h("button", { type: "button", class: "btn", id: "update-check" }, "Check for updates");
+  check.addEventListener("click", () => checkUpdates(true));
+  const install = h("button", { type: "button", class: "btn primary", id: "update-install", hidden: true }, "Install update");
+  install.addEventListener("click", installUpdate);
+  return h("section", { class: "pane updates" }, h("h3", {}, "Updates"),
+    h("div", { class: "update-state", id: "update-state" }),
+    h("div", { class: "update-actions" }, check, install),
+    h("div", { class: "update-progress", id: "update-progress", hidden: true }, h("i")),
+    h("p", { class: "hint", id: "update-notes", hidden: true }),
+    h("label", { class: "field" }, h("span", {}, "GitHub token"),
+      h("div", { class: "token-row" }, input, save, remove),
+      h("p", { class: "hint", id: "update-token-hint" })),
+    h("p", { class: "hint" }, "Updates come from your private repo, so the app needs a token that can read it. ", link,
+      ": choose Only select repositories → smowaudio, and under Repository permissions set Contents to Read-only. It's stored in Windows Credential Manager, not in the config file."));
+}
+
+async function refreshUpdates() {
+  try { updateStatus = await invoke("update_status"); } catch { return; }
+  renderUpdates();
+}
+
+function renderUpdates() {
+  const st = updateStatus;
+  if (!st) return;
+  const pill = $("#pill-update");
+  pill.hidden = !st.available;
+  $("#pill-update-version").textContent = st.available ?? "";
+  const state = $("#update-state");
+  if (!state) return;
+  const line = (cls, text) => h("span", { class: cls }, text);
+  state.replaceChildren(
+    line("num", `Version ${st.current}`),
+    st.available ? line("update-new", `Version ${st.available} is available`)
+      : st.error ? line("bad", st.error)
+      : st.checked ? line("ok", "You're up to date")
+      : line("faint", st.token_hint ? "Not checked yet" : "Add a token to check for updates"));
+  $("#update-install").hidden = !st.available;
+  $("#update-install").disabled = installing;
+  $("#update-check").disabled = installing || !st.token_hint;
+  $("#update-token-remove").hidden = !st.token_hint;
+  $("#update-token-hint").textContent = st.token_hint ? `Saved token ending in ${st.token_hint.replace("…", "")}. Paste a new one to replace it.` : "No token saved.";
+  const notes = $("#update-notes");
+  notes.hidden = !(st.available && st.notes);
+  notes.textContent = st.notes ?? "";
+}
+
+async function checkUpdates(manual = false) {
+  const button = $("#update-check");
+  if (button) { button.disabled = true; button.textContent = "Checking…"; }
+  try {
+    const version = await invoke("check_for_update");
+    if (manual) toast(version ? `Version ${version} is available` : "You're up to date");
+  } catch (e) { if (manual) showError(e); }
+  if (button) button.textContent = "Check for updates";
+  await refreshUpdates();
+}
+
+async function installUpdate() {
+  installing = true;
+  renderUpdates();
+  $("#update-progress").hidden = false;
+  $("#update-install").textContent = "Downloading…";
+  try {
+    // On success the installer closes this app and starts the new version.
+    await invoke("install_update");
+  } catch (e) {
+    showError(e);
+    installing = false;
+    $("#update-install").textContent = "Install update";
+    $("#update-progress").hidden = true;
+    await refreshUpdates();
+  }
+}
+
+listen("update-status", (e) => { updateStatus = e.payload; renderUpdates(); });
+listen("update-progress", (e) => {
+  const { downloaded, total } = e.payload;
+  const bar = $("#update-progress i");
+  if (bar && total) bar.style.width = `${(downloaded / total) * 100}%`;
+  const button = $("#update-install");
+  if (button && total) button.textContent = downloaded >= total ? "Installing…" : `Downloading… ${Math.round((downloaded / total) * 100)} %`;
+});
+$("#pill-update").addEventListener("click", () => setView("settings"));
 
 // ---------- keyboard shortcuts ----------
 // Action ids must match hotkeys.rs.

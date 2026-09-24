@@ -1,0 +1,85 @@
+# Builds a signed installer when a version tag (v1.2.3) is pushed, attaches it to a GitHub Release
+# and writes latest.json to the `updates` branch, which the app reads to offer the update.
+# Only the repo's own GITHUB_TOKEN is needed; the signing key is the TAURI_SIGNING_PRIVATE_KEY secret.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the app version
+        shell: pwsh
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ("v$version" -ne $env:GITHUB_REF_NAME) {
+            throw "Tag $env:GITHUB_REF_NAME doesn't match version $version in src-tauri/tauri.conf.json"
+          }
+          "VERSION=$version" >> $env:GITHUB_ENV
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The noise-removal engine takes most of the build; caching it cuts later builds a lot.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - name: Build the signed installer
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: npx tauri build --config src-tauri/tauri.release.conf.json
+
+      - name: Publish the release and the update manifest
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $repo = $env:GITHUB_REPOSITORY
+          $tag = $env:GITHUB_REF_NAME
+          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter "*_x64-setup.exe" | Select-Object -First 1
+          if (-not $setup) { throw "The installer wasn't built" }
+          $signature = (Get-Content "$($setup.FullName).sig" -Raw).Trim()
+
+          gh release create $tag $setup.FullName --title "Smowaudio $env:VERSION" --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw "Creating the release failed" }
+
+          # The app downloads through the API (the repo is private), so it needs the asset's API URL.
+          $release = gh api "repos/$repo/releases/tags/$tag" | ConvertFrom-Json
+          $asset = $release.assets | Where-Object { $_.name -eq $setup.Name } | Select-Object -First 1
+          $manifest = [ordered]@{
+            version   = $env:VERSION
+            notes     = $release.body
+            pub_date  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = @{ "windows-x86_64" = @{ signature = $signature; url = $asset.url } }
+          } | ConvertTo-Json -Depth 5
+
+          gh api "repos/$repo/branches/updates" --silent 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh api -X POST "repos/$repo/git/refs" -f ref=refs/heads/updates -f sha=$env:GITHUB_SHA --silent
+          }
+          $body = @{
+            message = "Update manifest for $tag"
+            content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($manifest))
+            branch  = "updates"
+          }
+          $existing = gh api "repos/$repo/contents/latest.json?ref=updates" --jq .sha 2>$null
+          if ($LASTEXITCODE -eq 0 -and $existing) { $body.sha = $existing.Trim() }
+          $body | ConvertTo-Json | gh api -X PUT "repos/$repo/contents/latest.json" --input - --silent
+          if ($LASTEXITCODE -ne 0) { throw "Writing latest.json failed" }
+          "Published $tag"

@@ -1,6 +1,6 @@
 [package]
 name = "smowaudio"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Lightweight audio mixer with virtual mic processing"
 
@@ -24,6 +24,7 @@ deep_filter = { path = "../vendor/DeepFilterNet/libDF", default-features = false
 # The #[interface] macro expands to `::windows_core` paths.
 windows-core = "0.62"
 tauri-plugin-global-shortcut = "2"
+tauri-plugin-updater = "2"
 
 [dependencies.windows]
 version = "0.62"
@@ -45,6 +46,7 @@ features = [
   "Win32_Devices_FunctionDiscovery",
   "Win32_UI_Shell_PropertiesSystem",
   "Win32_Security",
+  "Win32_Security_Credentials",
 ]
 
 # Neural network inference is unusably slow unoptimized, even in dev builds.

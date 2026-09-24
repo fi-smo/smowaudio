@@ -54,6 +54,8 @@ pub struct Config {
     /// Lower-case exe name -> channel index.
     pub app_rules: BTreeMap<String, usize>,
     pub launch_at_login: bool,
+    /// The exe the sign-in task starts, so it can be re-pointed after an update moves the app.
+    pub autostart_exe: Option<String>,
     /// Like Sonar: make Game / Chat / Virtual Mic the Windows default devices.
     pub set_windows_defaults: bool,
     /// The user's own defaults from before Smowaudio changed them, restored when turned off.
@@ -77,6 +79,7 @@ impl Default for Config {
             mic: MicSettings::default(),
             app_rules: BTreeMap::new(),
             launch_at_login: false,
+            autostart_exe: None,
             set_windows_defaults: true,
             previous_defaults: None,
             hotkeys: BTreeMap::new(),

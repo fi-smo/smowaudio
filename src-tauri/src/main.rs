@@ -7,6 +7,8 @@ mod engine;
 mod hotkeys;
 mod icons;
 mod osd;
+mod secrets;
+mod updates;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,6 +42,7 @@ struct AppState {
     hotkey_errors: Mutex<BTreeMap<String, String>>,
     /// Devices the streams were last set up for; the device watcher restarts them when it changes.
     device_fingerprint: Mutex<String>,
+    updates: updates::Updates,
 }
 
 impl AppState {
@@ -141,6 +144,44 @@ fn get_state_now(state: &AppState) -> CmdResult<Snapshot> {
         status,
         hotkey_errors: state.hotkey_errors.lock().clone(),
     })
+}
+
+#[tauri::command]
+fn update_status(app: AppHandle) -> updates::UpdateStatus {
+    updates::status(&app)
+}
+
+/// Saves (or with an empty value removes) the GitHub token used to download updates.
+#[tauri::command]
+async fn set_github_token(app: AppHandle, token: String) -> CmdResult<updates::UpdateStatus> {
+    let token = token.trim().to_string();
+    if token.is_empty() {
+        secrets::delete_token();
+    } else {
+        secrets::save_token(&token).map_err(|e| format!("Windows couldn't store the token: {e}"))?;
+    }
+    Ok(updates::status(&app))
+}
+
+/// Returns the newer version, or None if this one is the latest.
+#[tauri::command]
+async fn check_for_update(app: AppHandle) -> CmdResult<Option<String>> {
+    updates::check(&app).await
+}
+
+#[tauri::command]
+async fn install_update(app: AppHandle) -> CmdResult<()> {
+    updates::install(&app).await
+}
+
+/// Opens a GitHub page (token creation, releases) in the default browser.
+#[tauri::command]
+fn open_url(url: String) -> CmdResult<()> {
+    if !url.starts_with("https://github.com/") {
+        return Err("Only GitHub links can be opened".into());
+    }
+    std::process::Command::new("explorer.exe").arg(&url).spawn().map_err(err)?;
+    Ok(())
 }
 
 /// Mic test: "record" (5 s, before and after processing), "play" / "play_original", or "stop".
@@ -393,7 +434,11 @@ Register-ScheduledTask -TaskName 'Smowaudio' -Description 'Starts Smowaudio in t
     // The app used to be called AudioManager; its task would start an exe that no longer exists.
     let _ = run_powershell("Unregister-ScheduledTask -TaskName 'AudioManager' -Confirm:$false -ErrorAction SilentlyContinue");
     remove_legacy_run_entry();
-    state.update(|c| c.launch_at_login = enabled);
+    let exe = std::env::current_exe().ok().map(|p| p.display().to_string());
+    state.update(|c| {
+        c.launch_at_login = enabled;
+        c.autostart_exe = if enabled { exe } else { None };
+    });
     Ok(())
 }
 
@@ -646,11 +691,13 @@ fn main() {
         flyout_hidden_at: Mutex::new(None),
         hotkey_errors: Mutex::new(BTreeMap::new()),
         device_fingerprint: Mutex::new(String::new()),
+        updates: updates::Updates::default(),
     };
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| open_window(app)))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             get_state,
@@ -662,6 +709,11 @@ fn main() {
             app_levels,
             get_config,
             mic_test,
+            update_status,
+            set_github_token,
+            check_for_update,
+            install_update,
+            open_url,
             app_icon,
             assign_app,
             set_launch_at_login,
@@ -702,6 +754,26 @@ fn main() {
                 .build(app)?;
 
             hotkeys::start(app.handle());
+            updates::start_background_checks(app.handle());
+            // After an update installs the app somewhere new (or the first installer run), point the
+            // sign-in task at the exe that's running. Release builds only: a dev build would steal it.
+            if cfg!(not(debug_assertions)) {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let state = handle.state::<AppState>();
+                    let current = std::env::current_exe().ok().map(|p| p.display().to_string());
+                    let (enabled, registered) = {
+                        let config = state.config.lock();
+                        (config.launch_at_login, config.autostart_exe.clone())
+                    };
+                    if enabled && current.is_some() && registered != current {
+                        match set_launch_at_login_now(&state, true) {
+                            Ok(()) => append_log(&format!("sign-in task now starts {}", current.unwrap_or_default())),
+                            Err(e) => append_log(&format!("updating the sign-in task failed: {e}")),
+                        }
+                    }
+                });
+            }
 
             // Restart streams when the devices they depend on change (headset plugged in, mic
             // turned on, Windows default changed while following it).

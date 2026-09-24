@@ -474,3 +474,21 @@ body.osd-body { padding: 8px 8px 16px; display: flex; justify-content: flex-end;
 .mictest-bar { height: 4px; border-radius: 2px; background: var(--well); overflow: hidden; }
 .mictest-bar i { display: block; height: 100%; width: 0; background: var(--mic); transition: width .1s linear; }
 .mictest[data-phase="recording"] .mictest-bar i { background: var(--hot); }
+
+/* ---------- updates ---------- */
+.pill-update { cursor: pointer; border-color: var(--ok); color: var(--ok); font: inherit; font-size: 12px; }
+.pill-update b { color: var(--ok); }
+.update-state { display: grid; gap: 2px; font-size: 13px; }
+.update-state .ok { color: var(--ok); }
+.update-state .bad { color: var(--hot); overflow-wrap: anywhere; }
+.update-state .faint { color: var(--faint); }
+.update-state .update-new { color: var(--ok); font-weight: 600; }
+.update-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.update-actions .btn { text-align: center; }
+.update-actions .btn:disabled { opacity: .5; cursor: default; }
+.update-progress { height: 4px; border-radius: 2px; background: var(--well); overflow: hidden; }
+.update-progress i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .15s linear; }
+.pane.updates p.hint#update-notes { white-space: pre-line; max-height: 160px; overflow-y: auto; }
+.token-row { display: flex; gap: 6px; align-items: center; }
+.token-row .input { flex: 1; min-width: 0; background: var(--raised); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: 13px var(--font-num); user-select: text; }
+.linkbtn { border: 0; background: none; padding: 0; color: var(--focus); cursor: pointer; font: inherit; text-decoration: underline; }
