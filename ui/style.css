@@ -185,10 +185,13 @@ select.input {
 .scale span { position: absolute; right: 0; transform: translateY(50%); }
 .console-main { display: flex; justify-content: center; gap: 10px; min-width: 0; }
 .meter { display: flex; gap: 3px; padding-block: 7px; }
-.bar { position: relative; width: 5px; background: var(--well); border-radius: 2px; }
+/* Dotted meters: 3px segments with 2px gaps, lit in the usual green/yellow/red. */
+.bar { position: relative; width: 8px; background: repeating-linear-gradient(to top, var(--seg-off) 0 3px, transparent 3px 5px); border-radius: 1px; }
 .bar .lit {
-  position: absolute; inset: 0; border-radius: 2px;
+  position: absolute; inset: 0;
   background: linear-gradient(to top, var(--ok) 0 70%, var(--warn) 70% 85%, var(--hot) 85% 100%);
+  -webkit-mask: repeating-linear-gradient(to top, #000 0 3px, transparent 3px 5px);
+          mask: repeating-linear-gradient(to top, #000 0 3px, transparent 3px 5px);
   clip-path: inset(calc(100% - var(--lvl, 0%)) 0 0 0);
 }
 .bar .peak { position: absolute; left: 0; right: 0; height: 2px; bottom: var(--pk, 0%); background: var(--text); opacity: .7; }
