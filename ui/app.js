@@ -61,7 +61,7 @@ function toast(message, error = false) {
 }
 const showError = (e) => toast(String(e), true);
 
-const tape = (name, color) => h("span", { class: "tape", style: color ? `--c:${color}` : null }, name);
+const tape = (name, color) => h("span", { class: "tape", style: color ? `--c:${color}${color === "var(--master)" ? ";--ink:var(--master-ink)" : ""}` : null }, name);
 const pill = (label, value) => h("span", { class: "pill" }, label, " ", value);
 function viewHead(title, text, extra) {
   return h("div", { class: "viewhead" }, h("div", {}, h("h2", {}, title), text ? h("p", {}, text) : null), extra || null);
@@ -133,12 +133,17 @@ function biquadDb(b, f) {
   return 10 * Math.log10(num / den);
 }
 
-/** EQ editor: enable switch, presets, draggable response curve, band readouts. */
-function eqEditor(eq, onChange) {
-  const canvas = h("canvas", { class: "curve", role: "img", "aria-label": "Equalizer curve" });
+/**
+ * EQ editor: header (lead items, On switch, presets, close), draggable response curve, band cards.
+ * `showSwitch: false` leaves the on/off switch to the surrounding card (the Mic tab).
+ */
+function eqEditor(eq, onChange, { lead = [], onClose = null, showSwitch = true, graphHeight = 118 } = {}) {
+  const canvas = h("canvas", { class: "curve", role: "img", "aria-label": "Equalizer curve", style: `height:${graphHeight}px` });
   const seg = h("div", { class: "seg", role: "group", "aria-label": "Preset" });
   const bands = h("div", { class: "bands" });
-  const enabled = switchEl("Equalizer", eq.enabled, (v) => { eq.enabled = v; refresh(); onChange(); });
+  const enabled = switchEl(eq.enabled ? "On" : "Off", eq.enabled, (v) => { eq.enabled = v; showState(); refresh(); onChange(); });
+  const showState = () => { enabled.el.lastChild.textContent = eq.enabled ? "On" : "Off"; };
+  let selected = -1; // the band last clicked or dragged
   const RANGE = 15, hasGain = (b) => b.kind !== "low_pass" && b.kind !== "high_pass";
   const fx = (f, W) => (Math.log10(f / 20) / 3) * W, xf = (x, W) => 20 * Math.pow(10, (x / W) * 3);
   const gy = (g, H) => H / 2 - (g / RANGE) * (H / 2 - 12), yg = (y, H) => ((H / 2 - y) / (H / 2 - 12)) * RANGE;
@@ -148,17 +153,20 @@ function eqEditor(eq, onChange) {
       const b = h("button", { type: "button", "aria-pressed": String(eq.preset === name) }, name);
       if (name === "Custom") b.disabled = eq.preset !== "Custom";
       else b.addEventListener("click", () => {
-        eq.preset = name; eq.bands = structuredClone(PRESETS[name]); eq.enabled = true; enabled.input.checked = true;
+        eq.preset = name; eq.bands = structuredClone(PRESETS[name]); eq.enabled = true; enabled.input.checked = true; showState();
         refresh(); onChange();
       });
       return b;
     }));
   }
   function renderBands() {
-    bands.replaceChildren(...eq.bands.map((b) => {
+    bands.replaceChildren(...eq.bands.map((b, i) => {
       const f = b.freq >= 1000 ? `${(b.freq / 1000).toFixed(b.freq % 1000 ? 1 : 0)} kHz` : `${Math.round(b.freq)} Hz`;
       const g = hasGain(b) ? `${b.gain_db > 0 ? "+" : b.gain_db < 0 ? "−" : ""}${Math.abs(b.gain_db).toFixed(1)} dB` : "12 dB/oct";
-      return h("div", { class: "band" }, h("span", {}, KIND_LABEL[b.kind] || b.kind), h("b", {}, f), h("b", {}, g));
+      const card = h("button", { type: "button", class: "band" + (i === selected ? " sel" : ""), "aria-pressed": String(i === selected) },
+        h("span", {}, KIND_LABEL[b.kind] || b.kind), h("b", {}, `${f} · ${g}`));
+      card.addEventListener("click", () => { selected = i; renderBands(); draw(); });
+      return card;
     }));
   }
   function draw() {
@@ -197,10 +205,16 @@ function eqEditor(eq, onChange) {
     ctx.beginPath();
     pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
     ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.stroke();
-    for (const b of eq.bands) {
+    eq.bands.forEach((b, i) => {
+      const x = fx(b.freq, W), y = gy(hasGain(b) ? b.gain_db : 0, H);
+      if (i === selected) {
+        // The selected point is larger, with a 4px ring.
+        ctx.beginPath(); ctx.globalAlpha = 0.3; ctx.strokeStyle = color; ctx.lineWidth = 4;
+        ctx.arc(x, y, 9.5, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1;
+      }
       ctx.beginPath(); ctx.fillStyle = b.enabled ? color : faint;
-      ctx.arc(fx(b.freq, W), gy(hasGain(b) ? b.gain_db : 0, H), 5.5, 0, Math.PI * 2); ctx.fill();
-    }
+      ctx.arc(x, y, i === selected ? 7 : 5.5, 0, Math.PI * 2); ctx.fill();
+    });
   }
   function refresh() { renderSeg(); renderBands(); draw(); }
 
@@ -214,14 +228,17 @@ function eqEditor(eq, onChange) {
     });
     return best;
   };
-  canvas.addEventListener("pointerdown", (e) => { dragging = nearest(e, 16); if (dragging >= 0) canvas.setPointerCapture(e.pointerId); });
+  canvas.addEventListener("pointerdown", (e) => {
+    dragging = nearest(e, 16);
+    if (dragging >= 0) { canvas.setPointerCapture(e.pointerId); selected = dragging; renderBands(); draw(); }
+  });
   canvas.addEventListener("pointermove", (e) => {
     if (dragging < 0) return;
     const W = canvas.clientWidth, H = canvas.clientHeight, b = eq.bands[dragging];
     b.freq = Math.round(clamp(xf(e.offsetX, W), 20, 20000));
     if (hasGain(b)) b.gain_db = Math.round(clamp(yg(e.offsetY, H), -RANGE, RANGE) * 2) / 2;
-    eq.preset = "Custom"; eq.enabled = true; enabled.input.checked = true;
-    draw(); onChange();
+    eq.preset = "Custom"; eq.enabled = true; enabled.input.checked = true; showState();
+    draw(); renderBands(); onChange();
   });
   canvas.addEventListener("pointerup", () => { if (dragging >= 0) { dragging = -1; renderSeg(); renderBands(); } });
   canvas.addEventListener("wheel", (e) => {
@@ -229,15 +246,18 @@ function eqEditor(eq, onChange) {
     if (i < 0) return;
     e.preventDefault();
     const b = eq.bands[i];
+    selected = i;
     b.q = Math.round(clamp(b.q * (e.deltaY < 0 ? 1.1 : 0.9), 0.1, 10) * 100) / 100;
     eq.preset = "Custom"; refresh(); onChange();
   }, { passive: false });
   new ResizeObserver(draw).observe(canvas);
   renderSeg(); renderBands();
+  const close = onClose ? h("button", { type: "button", class: "iconbtn eq-close", title: "Close", "aria-label": "Close equalizer" }, "×") : null;
+  close?.addEventListener("click", onClose);
   return h("div", { class: "eq" },
-    h("div", { class: "drawer-head" }, enabled.el, h("span", { class: "spacer" }), seg),
+    h("div", { class: "drawer-head" }, ...lead, showSwitch ? enabled.el : null, h("span", { class: "spacer" }), seg, close),
     canvas, bands,
-    h("p", { class: "note" }, "Pick a preset, or drag the points to shape it yourself. Scroll over a point to make it wider or narrower."));
+    h("p", { class: "note" }, "Drag a point to shape the sound. Scroll over a point to make it wider or narrower."));
 }
 
 // ---------- apps ----------
@@ -292,10 +312,13 @@ async function refreshApps() {
 }
 
 // ---------- mixer ----------
-const meterRefs = new Map(); // key -> { lits, peaks, hold, holdAt }
+const meterRefs = new Map(); // key -> { lits, peaks, hold, holdAt, muted }
 const stripRefs = new Map(); // key -> update(volume, muted): shows changes made elsewhere
-const SCALE = [0, -6, -12, -24, -36, -48, -60];
+const SCALE = [0, -12, -24, -36, -48, -60];
 let eqOpen = null;
+
+const SPEAKER_ON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 6h2.5l3.5-3v10l-3.5-3h-2.5z"/><path d="M11 5.5a3.5 3.5 0 0 1 0 5M12.8 3.5a6.2 6.2 0 0 1 0 9"/></svg>';
+const SPEAKER_OFF = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 6h2.5l3.5-3v10l-3.5-3h-2.5z"/><path d="M11 6l3.5 4M14.5 6 11 10"/></svg>';
 
 function makeFader(label, value, onInput) {
   const el = h("div", { class: "fader", role: "slider", tabindex: "0", "aria-label": `${label} volume`, "aria-valuemin": "0", "aria-valuemax": "150" },
@@ -311,49 +334,65 @@ function makeFader(label, value, onInput) {
     if (Math.abs(v - 1) < 0.03) v = 1; // snap to unity
     render(); onInput(v);
   };
-  const fromY = (y) => { const r = el.getBoundingClientRect(); set(clamp((r.bottom - 9 - y) / (r.height - 18), 0, 1) * MAX_VOLUME); };
+  // The cap is 14px tall, so its centre travels 7px in from each end.
+  const fromY = (y) => { const r = el.getBoundingClientRect(); set(clamp((r.bottom - 7 - y) / (r.height - 14), 0, 1) * MAX_VOLUME); };
   el.addEventListener("pointerdown", (e) => { el.setPointerCapture(e.pointerId); el.dataset.dragging = ""; fromY(e.clientY); });
   el.addEventListener("pointermove", (e) => { if (el.hasPointerCapture(e.pointerId)) fromY(e.clientY); });
   el.addEventListener("lostpointercapture", () => delete el.dataset.dragging);
   el.addEventListener("dblclick", () => set(1));
-  /** Shows a value changed elsewhere (flyout, shortcut) unless the user is dragging this fader. */
-  el.setValue = (next) => { if (!("dragging" in el.dataset)) { v = clamp(next, 0, MAX_VOLUME); render(); } };
+  el.addEventListener("wheel", (e) => { e.preventDefault(); set(v + (e.deltaY < 0 ? 0.02 : -0.02)); }, { passive: false });
   el.addEventListener("keydown", (e) => {
     const step = { ArrowUp: 0.02, ArrowDown: -0.02, PageUp: 0.1, PageDown: -0.1 }[e.key];
     if (step !== undefined) { set(v + step); e.preventDefault(); }
     if (e.key === "Home") { set(1); e.preventDefault(); }
   });
+  /** Shows a value changed elsewhere (flyout, shortcut) unless the user is dragging this fader. */
+  el.setValue = (next) => { if (!("dragging" in el.dataset)) { v = clamp(next, 0, MAX_VOLUME); render(); } };
   render();
   return el;
 }
 
-function strip({ key, name, color, sub, icons, volume, onVolume, muted, onMute, extra }) {
-  const lits = [h("div", { class: "lit" }), h("div", { class: "lit" })];
-  const peaks = [h("div", { class: "peak" }), h("div", { class: "peak" })];
-  meterRefs.set(key, { lits, peaks, hold: [0, 0], holdAt: [0, 0] });
-  const db = h("span", { class: "db" }), pct = h("span", { class: "pct" });
-  const showVolume = (v) => { db.textContent = `${fmtDb(dbOf(v))} dB`; pct.textContent = `${Math.round(v * 100)}%`; };
-  showVolume(volume);
-  const el = h("div", { class: "strip" + (muted ? " muted" : ""), style: `--c:${color}`, "data-strip": key });
-  const mute = h("button", { type: "button", class: "btn mute", "aria-pressed": String(muted), title: `Mute ${name}` }, "M");
-  const showMuted = (m) => { mute.setAttribute("aria-pressed", String(m)); el.classList.toggle("muted", m); };
-  mute.addEventListener("click", () => {
-    const m = mute.getAttribute("aria-pressed") !== "true";
+/**
+ * One channel strip: tape and cable, app icons, dB scale + meters + fader, one dB readout, and a
+ * footer with the mute button and a feature button (EQ, Chain or Limit).
+ */
+function strip({ key, name, color, sub, icons, volume, onVolume, muted, onMute, extra, kind = "" }) {
+  const lits = [h("i", { class: "lit" }), h("i", { class: "lit" })];
+  const peaks = [h("i", { class: "peak", hidden: true }), h("i", { class: "peak", hidden: true })];
+  meterRefs.set(key, { lits, peaks, hold: [0, 0], holdAt: [0, 0], muted });
+  const readout = h("div", { class: "readout num" });
+  let current = volume, isMuted = muted;
+  const showReadout = () => { readout.textContent = isMuted ? "Muted" : `${fmtDb(dbOf(current))} dB`; };
+  const el = h("div", { class: `strip ${kind}`.trim(), style: `--c:${color}`, "data-strip": key });
+  const mute = h("button", { type: "button", class: "btn mute" });
+  const showMuted = (m) => {
+    isMuted = m;
+    mute.setAttribute("aria-pressed", String(m));
+    mute.title = `${m ? "Unmute" : "Mute"} ${name}`;
+    mute.setAttribute("aria-label", mute.title);
+    mute.innerHTML = m ? SPEAKER_OFF : SPEAKER_ON;
+    el.classList.toggle("muted", m);
+    meterRefs.get(key).muted = m;
+    showReadout();
+  };
+  mute.addEventListener("click", () => { showMuted(!isMuted); onMute(isMuted); });
+  const fader = makeFader(name, volume, (v) => { current = v; showReadout(); onVolume(v); });
+  stripRefs.set(key, (v, m) => {
+    fader.setValue(v);
+    if (!("dragging" in fader.dataset)) current = v;
     showMuted(m);
-    onMute(m);
   });
-  const fader = makeFader(name, volume, (v) => { showVolume(v); onVolume(v); });
-  stripRefs.set(key, (v, m) => { fader.setValue(v); if (!("dragging" in fader.dataset)) showVolume(v); showMuted(m); });
   el.append(
-    h("div", { class: "strip-top" }, tape(name), h("small", {}, sub)),
+    h("div", { class: "strip-top" }, tape(name, color), h("small", { title: sub }, sub)),
     h("div", { class: "appicons" }, icons),
     h("div", { class: "console" },
-      h("div", { class: "scale", "aria-hidden": "true" }, SCALE.map((d) => h("span", { style: `bottom:${meterPct(d)}%` }, String(d)))),
-      h("div", { class: "meter", "aria-hidden": "true" },
-        h("div", { class: "bar" }, lits[0], peaks[0]), h("div", { class: "bar" }, lits[1], peaks[1])),
-      fader),
-    h("div", { class: "readout" }, db, pct),
+      h("div", { class: "scale", "aria-hidden": "true" }, SCALE.map((d) => h("span", { style: `bottom:${meterPct(d)}%` }, d === 0 ? "0" : `−${-d}`))),
+      h("div", { class: "console-main" },
+        h("div", { class: "meter", "aria-hidden": "true" }, h("div", { class: "bar" }, lits[0], peaks[0]), h("div", { class: "bar" }, lits[1], peaks[1])),
+        fader)),
+    readout,
     h("div", { class: "strip-btns" }, mute, extra));
+  showMuted(muted);
   return el;
 }
 
@@ -362,18 +401,25 @@ function cableLabel(id) {
   return name ? name.replace(/\s*\(.*\)$/, "").replace(/ Output$| Input$/, "") : "No cable";
 }
 
+/** "EQ · Off", "Chain · 4 of 5 on": a faint label and a value. */
+const featureButton = (label, value, attrs = {}) =>
+  h("button", { type: "button", class: "btn feature", ...attrs }, h("span", { class: "k" }, label), h("span", { class: "v" }, value));
+
+const MIC_STEPS = ["denoise", "gate", "eq", "compressor", "limiter"];
+const micStepsOn = (mic) => MIC_STEPS.filter((k) => mic[k]?.enabled).length;
+
 function renderMixer() {
   const root = $("#view-mixer");
   meterRefs.clear();
   stripRefs.clear();
-  const strips = h("div", { class: "strips" });
+  const playback = h("div", { class: "strips playback" });
   CHANNELS.forEach((c, i) => {
     const cfg = snap.config.channels[i];
     const s = cfg.settings;
-    const eqButton = h("button", { type: "button", class: "btn eq", "aria-expanded": String(eqOpen === i), "data-eq": i },
-      h("span", { class: "k" }, "EQ"), s.eq.enabled ? s.eq.preset : "Off");
+    const eqButton = featureButton("EQ", s.eq.enabled ? s.eq.preset : "Off", { "aria-expanded": String(eqOpen === i), "data-eq": i, title: `${c.name} equalizer` });
+    eqButton.classList.add("eq");
     eqButton.addEventListener("click", () => toggleDrawer(i));
-    strips.append(strip({
+    playback.append(strip({
       key: `ch${i}`, name: c.name, color: c.color, sub: cfg.source ? cableLabel(cfg.source) : "No cable",
       icons: cfg.source ? [] : h("span", { class: "appnote" }, "Pick a cable in Settings"),
       volume: s.volume, onVolume: (v) => { s.volume = v; sendChannel(i); },
@@ -381,33 +427,59 @@ function renderMixer() {
       extra: eqButton,
     }));
   });
+  const master = snap.config.master;
+  playback.append(
+    h("div", { class: "sum-arrow", "aria-hidden": "true" }, h("span", { class: "chev right" })),
+    strip({
+      key: "master", name: "Master", color: "var(--master)", sub: "Output", kind: "master",
+      icons: h("span", { class: "appnote", title: snap.active_output || outputName() }, shortName(snap.active_output || outputName())),
+      volume: master.volume, onVolume: (v) => { master.volume = v; sendMaster(); },
+      muted: master.muted, onMute: (m) => { master.muted = m; sendMaster(); },
+      extra: featureButton("Limit", h("span", { id: "limit-readout" }, "0.0 dB"), { class: "btn feature static", disabled: true, title: "Peaks above −1 dBFS are turned down so the mix never clips" }),
+    }));
+
   const mic = snap.config.mic;
-  const micDevice = deviceName(snap.capture_devices, snap.config.mic_device);
-  strips.append(h("div", { class: "divider", "aria-hidden": "true" }), strip({
-    key: "mic", name: "Mic", color: "var(--mic)", sub: "Virtual Mic",
-    icons: h("span", { class: "appnote" }, shortName(micDevice) || "Automatic"),
+  const micDevice = snap.active_mic || deviceName(snap.capture_devices, snap.config.mic_device);
+  const chain = featureButton("Chain", `${micStepsOn(mic)} of ${MIC_STEPS.length} on`, { id: "mic-chain-btn", title: "Open the mic chain" });
+  chain.addEventListener("click", () => setView("mic"));
+  const voice = h("div", { class: "strips voice" }, strip({
+    key: "mic", name: "Mic", color: "var(--mic)", sub: virtualMicName() || "Virtual mic", kind: "mic",
+    icons: h("span", { class: "appnote", title: micDevice || "" }, shortName(micDevice) || "No microphone"),
     volume: micVolume(mic),
     onVolume: (v) => { mic.gain_db = v <= 0.001 ? -60 : Math.round(dbOf(v) * 10) / 10; sendMic(); },
     muted: mic.muted, onMute: (m) => { mic.muted = m; sendMic(); renderMicControls(); },
-    extra: h("button", { type: "button", class: "btn", onclick: () => setView("mic") }, h("span", { class: "k" }, "Chain"), "Open"),
-  }));
-  const master = snap.config.master;
-  strips.append(strip({
-    key: "master", name: "Master", color: "var(--master)", sub: "Output",
-    icons: h("span", { class: "appnote" }, shortName(outputName())),
-    volume: master.volume, onVolume: (v) => { master.volume = v; sendMaster(); },
-    muted: master.muted, onMute: (m) => { master.muted = m; sendMaster(); },
-    extra: h("span", { class: "btn static", title: "Peaks above −1 dBFS are turned down so the mix never clips" }, h("span", { class: "k" }, "Limit"), h("span", { id: "limit-readout", class: "num" }, "0.0 dB")),
+    extra: chain,
   }));
 
   root.replaceChildren(
-    viewHead("Mixer", "Game is your Windows default output, so system sounds and apps you haven't assigned land there.",
+    viewHead("Mixer", "System sounds and apps you haven't placed play in Game.",
       h("div", { class: "chips" }, pill("Buffer", h("b", { class: "num", id: "chip-buffer" }, "–")))),
-    strips,
+    h("div", { class: "mixer-groups" },
+      h("section", { class: "mixer-group", "aria-label": "Playback" },
+        h("div", { class: "group-label" }, h("span", {}, "Playback"), h("small", {}, "Game, Chat, Media and Aux mix into Master, then your headphones")),
+        playback),
+      h("section", { class: "mixer-group voice-group", "aria-label": "Your voice" },
+        h("div", { class: "group-label" }, h("span", {}, "Your voice"), h("small", {}, "Sent to apps as the virtual mic")),
+        voice)),
     h("section", { class: "drawer", id: "eq-drawer", hidden: true }));
   renderDrawer();
   updateStripIcons();
+  // Re-fit whenever the EQ panel changes height (opening, a preset adding band cards).
+  new ResizeObserver(() => fitMixer()).observe($("#eq-drawer"));
+  fitMixer();
 }
+
+// The Mixer, with the EQ open, should fit the window without scrolling: shorten the faders (down
+// to 140px) before the page has to scroll.
+const FADER_MAX = 190, FADER_MIN = 140;
+function fitMixer() {
+  const root = $("#view-mixer"), content = $(".content");
+  if (!root || root.hidden) return;
+  root.style.setProperty("--fader-h", `${FADER_MAX}px`);
+  const overflow = content.scrollHeight - content.clientHeight;
+  if (overflow > 0) root.style.setProperty("--fader-h", `${Math.max(FADER_MIN, FADER_MAX - overflow)}px`);
+}
+window.addEventListener("resize", () => fitMixer());
 
 const micVolume = (mic) => clamp(Math.pow(10, mic.gain_db / 20), 0, MAX_VOLUME);
 
@@ -415,13 +487,15 @@ const micVolume = (mic) => clamp(Math.pow(10, mic.gain_db / 20), 0, MAX_VOLUME);
 function updateStrips() {
   snap.config.channels.forEach((c, i) => {
     stripRefs.get(`ch${i}`)?.(c.settings.volume, c.settings.muted);
-    const b = $(`[data-eq="${i}"]`);
-    if (b) b.replaceChildren(h("span", { class: "k" }, "EQ"), c.settings.eq.enabled ? c.settings.eq.preset : "Off");
+    const b = $(`[data-eq="${i}"] .v`);
+    if (b) b.textContent = c.settings.eq.enabled ? c.settings.eq.preset : "Off";
   });
   stripRefs.get("mic")?.(micVolume(snap.config.mic), snap.config.mic.muted);
   stripRefs.get("master")?.(snap.config.master.volume, snap.config.master.muted);
+  const chain = $("#mic-chain-btn .v");
+  if (chain) chain.textContent = `${micStepsOn(snap.config.mic)} of ${MIC_STEPS.length} on`;
   const outNote = $('[data-strip="master"] .appicons .appnote');
-  if (outNote) outNote.textContent = shortName(outputName());
+  if (outNote) { outNote.textContent = shortName(snap.active_output || outputName()); outNote.title = snap.active_output || outputName(); }
 }
 
 function updateStripIcons() {
@@ -444,6 +518,7 @@ function toggleDrawer(i) {
   eqOpen = eqOpen === i ? null : i;
   document.querySelectorAll("[data-eq]").forEach((b) => b.setAttribute("aria-expanded", String(+b.dataset.eq === eqOpen)));
   renderDrawer();
+  fitMixer();
 }
 function renderDrawer() {
   const drawer = $("#eq-drawer");
@@ -452,14 +527,11 @@ function renderDrawer() {
   const i = eqOpen, c = CHANNELS[i], eq = snap.config.channels[i].settings.eq;
   drawer.hidden = false;
   drawer.style.setProperty("--c", c.color);
-  drawer.replaceChildren(
-    h("div", { class: "drawer-head" }, tape(c.name), h("h3", {}, "Equalizer"), h("span", { class: "spacer" }),
-      h("button", { type: "button", class: "iconbtn", onclick: () => toggleDrawer(i) }, "Close")),
-    eqEditor(eq, () => {
-      sendChannel(i);
-      const b = $(`[data-eq="${i}"]`);
-      if (b) b.replaceChildren(h("span", { class: "k" }, "EQ"), eq.enabled ? eq.preset : "Off");
-    }));
+  drawer.replaceChildren(eqEditor(eq, () => {
+    sendChannel(i);
+    const v = $(`[data-eq="${i}"] .v`);
+    if (v) v.textContent = eq.enabled ? eq.preset : "Off";
+  }, { lead: [tape(c.name), h("h3", {}, "Equalizer")], onClose: () => toggleDrawer(i), graphHeight: 118 }));
 }
 
 function setMeterPair(key, pair) {
@@ -467,67 +539,149 @@ function setMeterPair(key, pair) {
   if (!m || !m.lits[0].isConnected) return;
   const now = performance.now();
   pair.forEach((db, i) => {
-    const pct = meterPct(db);
+    // A muted strip's meters stay empty.
+    const pct = m.muted ? 0 : meterPct(db);
     m.lits[i].style.setProperty("--lvl", `${pct}%`);
     if (pct >= m.hold[i]) { m.hold[i] = pct; m.holdAt[i] = now; }
     else if (now - m.holdAt[i] > 900) m.hold[i] = Math.max(pct, m.hold[i] - 2.5);
     m.peaks[i].style.setProperty("--pk", `${m.hold[i]}%`);
+    m.peaks[i].hidden = m.hold[i] <= 0;
   });
 }
 
 // ---------- apps view ----------
 let dragExe = null;
 let laneSignature = "";
+let moveMenu = null; // the open Move menu, if any
+
+// An empty image, so the browser's own drag image doesn't cover the columns; the drop zone shows a
+// preview of the card instead.
+const NO_DRAG_IMAGE = (() => { const i = new Image(); i.src = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="; return i; })();
 
 function renderApps() {
+  closeMoveMenu();
   const root = $("#view-apps");
   const lanes = h("div", { class: "lanes" });
   CHANNELS.forEach((c, i) => {
     const list = apps.filter((a) => channelOf(a).index === i);
-    const lane = h("section", { class: "lane", style: `--c:${c.color}`, "aria-label": `${c.name} channel` },
-      h("div", { class: "lane-head" }, tape(c.name), h("small", {}, `${list.length} app${list.length === 1 ? "" : "s"}`)));
-    for (const app of list) lane.append(appCard(app));
-    if (i === 0) {
-      lane.append(h("div", { class: "appcard locked", title: "Windows always plays system sounds on the default output device" },
-        h("span", { class: "icon" }, "S"), h("span", { class: "title" }, "System sounds"),
-        h("span", { class: "sub" }, h("em", {}, "Windows default"), h("span", { class: "badge" }, "Fixed"))));
-    }
-    if (!list.length && i !== 0) lane.append(h("p", { class: "empty" }, "Drag an app here."));
-    lane.addEventListener("dragover", (e) => { e.preventDefault(); lane.classList.add("over"); });
-    lane.addEventListener("dragleave", (e) => { if (!lane.contains(e.relatedTarget)) lane.classList.remove("over"); });
-    lane.addEventListener("drop", (e) => { e.preventDefault(); lane.classList.remove("over"); if (dragExe) moveApp(dragExe, i); });
+    const zone = h("div", { class: "dropzone", hidden: list.length > 0 }, h("span", { class: "dz-text" }, "Drag an app here"));
+    const lane = h("section", { class: "lane", style: `--c:${c.color}`, "aria-label": `${c.name} channel`, "data-lane": i },
+      h("div", { class: "lane-head" }, tape(c.name), h("small", {}, `${list.length} app${list.length === 1 ? "" : "s"}`)),
+      ...list.map(appCard),
+      zone,
+      i === 0 ? h("p", { class: "lane-note" }, h("span", { class: "info", "aria-hidden": "true" }, "i"), "Default channel. System sounds and new apps play here.") : null);
+    lane.addEventListener("dragover", (e) => {
+      const app = apps.find((a) => a.exe === dragExe);
+      if (!app || channelOf(app).index === i) return;
+      e.preventDefault();
+      if (lane.classList.contains("over")) return;
+      document.querySelectorAll(".lane.over").forEach((l) => leaveLane(l));
+      lane.classList.add("over");
+      // The zone grows, says where the app goes, and holds a preview of the card.
+      zone.hidden = false;
+      zone.classList.add("active");
+      zone.replaceChildren(appCard(app, true), h("span", { class: "dz-text" }, `Drop to move to ${c.name}`));
+    });
+    lane.addEventListener("dragleave", (e) => { if (!lane.contains(e.relatedTarget)) leaveLane(lane); });
+    lane.addEventListener("drop", (e) => {
+      e.preventDefault();
+      const exe = dragExe;
+      leaveLane(lane);
+      if (exe) moveApp(exe, i);
+    });
     lanes.append(lane);
   });
   const playing = apps.filter((a) => a.active).length;
   root.replaceChildren(
-    viewHead("Apps", "Drag an app onto a channel. Windows remembers the choice, and apps you haven't placed follow the default: Game.",
+    viewHead("Apps", "Drag an app onto a channel. Windows remembers where you put it.",
       h("span", { class: "pill" }, h("span", { class: "dot" }), h("b", {}, `${playing} playing`))),
     apps.length ? lanes : h("p", { class: "hint" }, "No apps are playing audio right now. Start something and it appears here."));
   laneSignature = signature();
 }
 
-function appCard(app) {
+function leaveLane(lane) {
+  lane.classList.remove("over");
+  const zone = lane.querySelector(".dropzone");
+  if (!zone) return;
+  zone.classList.remove("active");
+  zone.replaceChildren(h("span", { class: "dz-text" }, "Drag an app here"));
+  zone.hidden = lane.querySelectorAll(".appcard:not(.ghost)").length > 0;
+}
+
+const MOVE_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 5h9M9.5 2.5 12 5 9.5 7.5M13 11H4M6.5 8.5 4 11l2.5 2.5"/></svg>';
+
+/** An app card; `ghost` is the tilted preview shown in a drop zone while dragging. */
+function appCard(app, ghost = false) {
   const where = channelOf(app);
-  const select = h("select", { "aria-label": `Channel for ${app.name}` },
-    h("option", { value: "" }, "Follow Windows default"),
-    ...CHANNELS.map((c, i) => { const o = h("option", { value: String(i) }, c.name); o.selected = where.chosen && where.index === i; return o; }));
-  if (!where.chosen) select.value = "";
-  select.addEventListener("change", () => moveApp(app.exe, select.value === "" ? null : +select.value));
-  const card = h("div", { class: "appcard", draggable: "true", "data-exe": app.exe },
+  const card = h("div", { class: "appcard" + (ghost ? " ghost" : ""), draggable: ghost ? null : "true", "data-exe": ghost ? null : app.exe },
     appIcon(app, "icon"),
-    h("span", { class: "title", title: app.name }, app.name),
-    h("span", { class: "activity", "data-activity": app.exe, "aria-hidden": "true" }, appSegments(false), appSegments(true)),
-    h("span", { class: "level num silent", "data-level-db": app.exe }, "−∞"),
-    h("span", { class: "sub" }, h("em", {}, app.exe), where.chosen ? null : h("span", { class: "badge" }, "Default")),
-    select);
-  card.addEventListener("dragstart", (e) => { dragExe = app.exe; e.dataTransfer.setData("text/plain", app.exe); card.classList.add("dragging"); });
-  card.addEventListener("dragend", () => { dragExe = null; card.classList.remove("dragging"); });
+    h("div", { class: "app-text" },
+      h("div", { class: "app-line" }, h("span", { class: "title", title: app.name }, app.name), h("em", { class: "exe" }, app.exe)),
+      h("div", { class: "app-line sub" },
+        where.chosen ? null : h("span", { class: "badge", title: "Not placed yet: follows the Windows default, Game" }, "Default"),
+        h("span", { class: "level num silent", "data-level-db": ghost ? null : app.exe }, "−∞"))));
+  if (ghost) return card;
+  const move = h("button", { type: "button", class: "iconbtn move", title: `Move ${app.name} to another channel`, "aria-label": `Move ${app.name}`, "aria-haspopup": "menu" });
+  move.innerHTML = MOVE_ICON;
+  move.addEventListener("click", (e) => { e.stopPropagation(); openMoveMenu(app, move); });
+  card.append(move, h("span", { class: "activity", "data-activity": app.exe, "aria-hidden": "true" }, appSegments(false), appSegments(true)));
+  card.addEventListener("dragstart", (e) => {
+    closeMoveMenu();
+    dragExe = app.exe;
+    e.dataTransfer.setData("text/plain", app.exe);
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setDragImage(NO_DRAG_IMAGE, 0, 0);
+    // Styled as a placeholder only after the browser has taken its (empty) snapshot.
+    requestAnimationFrame(() => card.classList.add("dragging"));
+  });
+  card.addEventListener("dragend", () => {
+    dragExe = null;
+    card.classList.remove("dragging");
+    document.querySelectorAll(".lane.over").forEach((l) => leaveLane(l));
+  });
   return card;
 }
 
+/** Move menu: the other channels, and "Follow Windows default" for apps that were placed. */
+function openMoveMenu(app, anchor) {
+  const wasOpen = moveMenu?.anchor === anchor;
+  closeMoveMenu();
+  if (wasOpen) return;
+  const where = channelOf(app);
+  const item = (label, channel, color) => {
+    const b = h("button", { type: "button", role: "menuitem" }, color ? h("span", { class: "swatch", style: `--c:${color}` }) : null, label);
+    b.addEventListener("click", () => { closeMoveMenu(); moveApp(app.exe, channel); });
+    return b;
+  };
+  const menu = h("div", { class: "move-menu", role: "menu", "aria-label": `Move ${app.name}` },
+    h("div", { class: "menu-label" }, "Move to"),
+    ...CHANNELS.map((c, i) => (i === where.index ? null : item(c.name, i, c.color))),
+    where.chosen ? h("hr") : null,
+    where.chosen ? item("Follow Windows default", null, null) : null);
+  document.body.append(menu);
+  const r = anchor.getBoundingClientRect();
+  const left = Math.min(r.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8);
+  const below = r.bottom + 4 + menu.offsetHeight < window.innerHeight;
+  menu.style.left = `${Math.max(8, left)}px`;
+  menu.style.top = `${below ? r.bottom + 4 : r.top - 4 - menu.offsetHeight}px`;
+  anchor.setAttribute("aria-expanded", "true");
+  moveMenu = { menu, anchor };
+  menu.querySelector("button")?.focus();
+}
+
+function closeMoveMenu() {
+  if (!moveMenu) return;
+  moveMenu.anchor.removeAttribute("aria-expanded");
+  moveMenu.menu.remove();
+  moveMenu = null;
+}
+document.addEventListener("pointerdown", (e) => { if (moveMenu && !moveMenu.menu.contains(e.target) && !moveMenu.anchor.contains(e.target)) closeMoveMenu(); }, true);
+document.addEventListener("keydown", (e) => { if (moveMenu && e.key === "Escape") { const a = moveMenu.anchor; closeMoveMenu(); a.focus(); } });
+$(".content").addEventListener("scroll", () => closeMoveMenu(), { passive: true });
+
 const signature = () => apps.map((a) => `${a.exe}:${channelOf(a).index}:${channelOf(a).chosen}`).join("|");
 function updateLanes() {
-  if (dragExe || document.activeElement?.tagName === "SELECT") return;
+  if (dragExe || moveMenu) return;
   if (signature() !== laneSignature) { renderApps(); }
 }
 
@@ -587,16 +741,23 @@ async function moveApp(exe, channel) {
 
 // ---------- microphone ----------
 let selectedNode = "denoise";
+// The chain, left to right. `toggle` is the setting that switches a step on and off; Mic input and
+// Virtual mic are the ends of the chain, not steps you can switch off.
 const NODES = [
-  { id: "input", name: "Mic input" },
-  { id: "denoise", name: "Noise removal", toggle: "denoise" },
-  { id: "gate", name: "Noise gate", toggle: "gate" },
-  { id: "eq", name: "Equalizer", toggle: "eq" },
-  { id: "comp", name: "Compressor", toggle: "compressor" },
-  { id: "limiter", name: "Limiter" },
-  { id: "output", name: "Virtual Mic" },
+  { id: "input", name: "Mic input", help: "The physical microphone everything below starts from." },
+  { id: "denoise", name: "Noise removal", toggle: "denoise", help: "DeepFilterNet3 removes keyboards, fans and background voices while you talk." },
+  { id: "gate", name: "Noise gate", toggle: "gate", help: "Cuts room noise between words. Stay quiet for a moment, then set the threshold just above the grey noise bar." },
+  { id: "eq", name: "Equalizer", toggle: "eq", help: "Shapes your voice: cut rumble, add clarity." },
+  { id: "comp", name: "Compressor", toggle: "compressor", help: "Evens out loud and quiet speech so you stay at one level in Discord." },
+  { id: "limiter", name: "Limiter", toggle: "limiter", help: "Catches sudden peaks, like a laugh or a desk bump, at −1 dBFS so the virtual mic never clips. Normal speech passes untouched and it adds no delay." },
+  { id: "output", name: "Virtual mic", help: "What Discord, OBS or TeamSpeak hear." },
 ];
-const nodeOn = (n) => !n.toggle || snap.config.mic[n.toggle].enabled;
+const nodeOn = (n) => !n.toggle || snap.config.mic[n.toggle]?.enabled !== false;
+const GATE_MIN = -80, GATE_MAX = 0; // the threshold slider and the input meter share this scale
+const gatePct = (db) => clamp((db - GATE_MIN) / (GATE_MAX - GATE_MIN), 0, 1) * 100;
+
+const HEADPHONES_ICON = '<svg class="btn-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 10V8a5.5 5.5 0 0 1 11 0v2"/><rect x="2" y="9.5" width="3" height="4.5" rx="1"/><rect x="11" y="9.5" width="3" height="4.5" rx="1"/></svg>';
+const MIC_ICON = '<svg class="btn-icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="8" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5V15"/></svg>';
 
 function virtualMicName() {
   const sink = snap.render_devices.find((d) => d.id === snap.config.mic_sink);
@@ -607,93 +768,96 @@ function virtualMicName() {
 function renderMic() {
   const root = $("#view-mic");
   const mic = snap.config.mic;
-  const listen = switchEl("Listen to my mic", mic.monitor, (v) => { mic.monitor = v; sendMic(); });
-  listen.el.style.setProperty("--c", "var(--mic)");
-  const mute = h("button", { type: "button", class: "btn mute", id: "mic-mute", "aria-pressed": String(mic.muted) }, mic.muted ? "Mic muted" : "Mute mic");
+  const listen = h("button", { type: "button", class: "btn listen", id: "mic-listen" });
+  listen.addEventListener("click", () => { mic.monitor = !mic.monitor; sendMic(); renderMicControls(); });
+  const mute = h("button", { type: "button", class: "btn mute", id: "mic-mute" });
   mute.addEventListener("click", () => { mic.muted = !mic.muted; sendMic(); renderMicControls(); updateStrips(); });
 
-  const chain = h("div", { class: "chain", id: "chain", role: "group", "aria-label": "Signal chain" });
-  const levels = h("section", { class: "pane" },
-    h("h3", {}, "Levels"),
-    hmeter("Mic input", "mic-in", true),
-    hmeter("Virtual Mic output", "mic-out"),
-    h("div", { class: "hscale", "aria-hidden": "true" }, ["−60", "−48", "−36", "−24", "−12", "0 dBFS"].map((t) => h("span", {}, t))),
-    hmeter("Compressor gain reduction", "mic-gr", false, true),
-    h("p", { class: "hint" }, "The white mark on the input meter is the gate threshold: speech above it passes, room noise below it is cut."),
-    micTestPanel());
-
+  const change = h("button", { type: "button", class: "linkish link" }, "Change");
+  change.addEventListener("click", () => { setSettingsTab("devices"); setView("settings"); });
+  const from = snap.active_mic ? shortName(snap.active_mic) : null;
+  const to = virtualMicName();
   root.replaceChildren(
-    viewHead("Microphone", "Your voice runs through each step from left to right before Discord, OBS or TeamSpeak hear it. Select a step to adjust it."),
-    h("div", { class: "route" },
-      pill("From", h("b", {}, shortName(deviceName(snap.capture_devices, snap.config.mic_device)) || "Automatic")),
-      h("span", { class: "arrow", "aria-hidden": "true" }, "→"),
-      pill("To", h("b", {}, virtualMicName() ? `Virtual Mic · ${virtualMicName()}` : "No Virtual Mic cable")),
-      h("span", { class: "spacer" }), listen.el, mute),
-    chain,
-    h("div", { class: "detail" }, h("section", { class: "pane", id: "node-detail" }), levels));
+    viewHead("Microphone", "Your voice goes through each step, left to right, before Discord, OBS or TeamSpeak hear it.",
+      h("div", { class: "head-actions" }, listen, mute)),
+    h("div", { class: "chain-tabs", id: "chain", role: "tablist", "aria-label": "Mic chain" }),
+    h("p", { class: "route" },
+      "From ", from ? h("b", {}, from) : h("b", { class: "bad" }, "no microphone found"),
+      snap.config.mic_device ? "" : " (automatic)", " → To ",
+      to ? h("b", {}, to) : h("b", { class: "bad" }, "no Virtual Mic cable"), to ? ", which apps pick as their mic" : "", " ", change),
+    h("div", { class: "detail" },
+      h("section", { class: "card mic-card", id: "node-detail" }),
+      h("div", { class: "mic-side" }, levelsCard(), micTestCard())));
+  renderMicControls();
   renderChain();
   renderNodeDetail();
 }
 
-// ---------- mic test ----------
-function micTestPanel() {
-  const button = (id, label, action) => {
-    const b = h("button", { type: "button", class: "btn", id }, label);
-    b.addEventListener("click", () => invoke("mic_test", { action }).catch(showError));
-    return b;
-  };
-  return h("div", { class: "mictest", id: "mic-test" },
-    h("h4", {}, "Test your mic"),
-    h("p", { class: "hint", id: "mic-test-hint" }, "Records 5 seconds, then plays it back on your headphones with every filter applied. Play the original to hear the difference."),
-    h("div", { class: "mictest-row" },
-      button("mic-test-record", "Record 5 s", "record"),
-      button("mic-test-play", "Play filtered", "play"),
-      button("mic-test-original", "Play original", "play_original"),
-      button("mic-test-stop", "Stop", "stop")),
-    h("div", { class: "mictest-bar", "aria-hidden": "true" }, h("i", { id: "mic-test-progress" })));
-}
-
-function updateMicTest(t) {
-  const panel = $("#mic-test");
-  if (!panel || !t) return;
-  const muted = snap.config.mic.muted;
-  const busy = t.phase !== "idle";
-  $("#mic-test-record").disabled = busy || muted;
-  $("#mic-test-record").textContent = t.phase === "recording" ? `Recording… ${Math.ceil(5 * (1 - t.progress))} s` : "Record 5 s";
-  $("#mic-test-play").disabled = busy || !t.recorded;
-  $("#mic-test-original").disabled = busy || !t.recorded;
-  $("#mic-test-stop").disabled = !busy;
-  $("#mic-test-progress").style.width = `${busy ? t.progress * 100 : 0}%`;
-  panel.dataset.phase = t.phase;
-  const hint = $("#mic-test-hint");
-  hint.textContent = muted ? "Your mic is muted. Unmute it to record a test."
-    : t.phase === "recording" ? "Speak normally, the way you would in Discord."
-    : t.phase === "playing" ? (t.original ? "Playing your mic without any filters." : "Playing with every filter applied, as others hear you.")
-    : "Records 5 seconds, then plays it back on your headphones with every filter applied. Play the original to hear the difference.";
-}
-
-function hmeter(label, id, marker = false, gr = false) {
-  return h("div", { class: "hmeter" },
-    h("div", { class: "lbl" }, h("span", {}, label), h("span", { class: "num", id: `${id}-db` }, "–")),
-    h("div", { class: "hbar" + (gr ? " gr" : ""), id }, h("div", { class: "lit" }), marker ? h("div", { class: "marker", id: "gate-marker", title: "Gate threshold" }) : null));
-}
-
 function renderMicControls() {
+  const mic = snap.config.mic;
   const mute = $("#mic-mute");
-  if (mute) { mute.setAttribute("aria-pressed", String(snap.config.mic.muted)); mute.textContent = snap.config.mic.muted ? "Mic muted" : "Mute mic"; }
+  if (mute) {
+    mute.setAttribute("aria-pressed", String(mic.muted));
+    mute.innerHTML = `${MIC_ICON}<span>${mic.muted ? "Mic muted" : "Mute mic"}</span>`;
+  }
+  const listen = $("#mic-listen");
+  if (listen) {
+    listen.setAttribute("aria-pressed", String(mic.monitor));
+    listen.innerHTML = `${HEADPHONES_ICON}<span>Listen to my mic</span>`;
+    listen.title = mic.monitor ? "Stop hearing yourself" : "Hear your processed mic in your headphones";
+  }
 }
 
 function renderChain() {
   const chain = $("#chain");
   if (!chain) return;
-  const chev = () => { const s = document.createElementNS("http://www.w3.org/2000/svg", "svg"); s.setAttribute("class", "chev"); s.setAttribute("viewBox", "0 0 14 14"); s.setAttribute("aria-hidden", "true"); s.innerHTML = '<path d="M5 3l4 4-4 4" stroke="currentColor" fill="none" stroke-width="1.6"/>'; return s; };
-  chain.replaceChildren(...NODES.flatMap((n, i) => {
-    const b = h("button", { type: "button", class: "node" + (nodeOn(n) ? "" : " off"), "aria-pressed": String(n.id === selectedNode) },
-      h("span", { class: "nhead" }, h("span", { class: "led" + (nodeOn(n) ? " on" : ""), "data-led": n.id }), n.name),
-      h("span", { class: "state", "data-state": n.id }, "…"));
+  chain.replaceChildren(...NODES.map((n) => {
+    const b = h("button", { type: "button", role: "tab", class: "chain-tab" + (nodeOn(n) ? "" : " off"), "aria-selected": String(n.id === selectedNode), "data-node": n.id },
+      h("span", { class: "cdot", "data-led": n.id }),
+      h("span", { class: "ctext" }, h("span", { class: "cname" }, n.name), h("span", { class: "cstate", "data-state": n.id }, "…")));
     b.addEventListener("click", () => { selectedNode = n.id; renderChain(); renderNodeDetail(); });
-    return i ? [chev(), b] : [b];
+    return b;
   }));
+  if (lastMicMeters) updateMicMeters(lastMicMeters);
+}
+
+/** A section of the step card, separated from the one above by a line. */
+const micSection = (...children) => h("div", { class: "mic-sec" }, ...children);
+
+/**
+ * Compact value field: drag up or down to change it, or type a new value. Used for timings.
+ */
+function valueField({ label, value, unit, min, max, step, onChange }) {
+  const input = h("input", { class: "vf-input num", inputmode: "decimal", "aria-label": `${label} in ${unit}` });
+  const round = (v) => Math.round(clamp(v, min, max) / step) * step;
+  let v = value;
+  const show = () => { input.value = String(+v.toFixed(step < 1 ? 1 : 0)); };
+  const commit = (next) => { v = round(next); show(); onChange(v); };
+  input.addEventListener("change", () => { const n = parseFloat(input.value.replace(",", ".")); if (Number.isFinite(n)) commit(n); else show(); });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); commit(v + (e.key === "ArrowUp" ? step : -step)); }
+    if (e.key === "Enter") input.blur();
+  });
+  const field = h("label", { class: "vfield" }, h("span", { class: "vf-label" }, label), h("span", { class: "vf-value" }, input, h("span", { class: "vf-unit" }, unit)));
+  // Dragging: one step per 3 px, starting from where the pointer went down; a click still types.
+  field.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    const y0 = e.clientY, v0 = v;
+    let moved = false;
+    const move = (ev) => {
+      const d = Math.round((y0 - ev.clientY) / 3);
+      if (!moved && Math.abs(d) < 1) return;
+      moved = true;
+      ev.preventDefault();
+      commit(v0 + d * step);
+    };
+    const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); if (moved) input.blur(); };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  });
+  show();
+  field.set = (next) => { v = next; show(); };
+  return field;
 }
 
 function renderNodeDetail() {
@@ -701,59 +865,118 @@ function renderNodeDetail() {
   if (!pane) return;
   const mic = snap.config.mic;
   const n = NODES.find((x) => x.id === selectedNode);
-  const onToggle = n.toggle ? switchEl("On", mic[n.toggle].enabled, (v) => { mic[n.toggle].enabled = v; sendMic(); renderChain(); }) : null;
+  // One switch per step, in the card header, labelled with its state.
+  let toggle = null;
+  if (n.toggle) {
+    const on = mic[n.toggle].enabled;
+    toggle = switchEl(on ? "On" : "Off", on, (v) => {
+      mic[n.toggle].enabled = v;
+      toggle.el.lastChild.textContent = v ? "On" : "Off";
+      pane.classList.toggle("off", !v);
+      sendMic(); renderChain(); updateStrips();
+    });
+    toggle.input.setAttribute("aria-label", `${n.name} on or off`);
+  }
   const body = [];
   if (n.id === "input") {
-    body.push(h("p", { class: "hint" }, `Recording from ${deviceName(snap.capture_devices, snap.config.mic_device) || "your default microphone"}. Change the microphone in Settings; a mic you plug in later is picked up automatically.`),
-      h("button", { type: "button", class: "btn", onclick: () => setView("settings") }, "Open Settings"));
+    const settings = h("button", { type: "button", class: "btn" }, "Change in Settings");
+    settings.addEventListener("click", () => { setSettingsTab("devices"); setView("settings"); });
+    body.push(micSection(h("p", { class: "hint" },
+      snap.active_mic ? `Recording from ${snap.active_mic}.` : "No microphone found. Connect one, or pick a specific device in Settings.",
+      " A mic you plug in later is picked up automatically."), settings));
   }
   if (n.id === "denoise") {
     const d = mic.denoise;
     const ll = switchEl("Low-latency model", d.low_latency, (v) => { d.low_latency = v; sendMic(); renderNodeDetail(); });
-    body.push(h("p", { class: "hint" }, "DeepFilterNet3 removes keyboards, fans and background voices while you talk."),
-      slider({ label: "Strength", min: 6, max: 100, value: d.strength_db, format: (v) => (v >= 100 ? "Max" : `${v} dB`), onInput: (v) => { d.strength_db = v; sendMic(); } }),
-      slider({ label: "Residual cleanup", min: 0, max: 0.05, step: 0.005, value: d.post_filter, format: (v) => (v === 0 ? "Off" : v.toFixed(3)), onInput: (v) => { d.post_filter = v; sendMic(); } }),
-      ll.el,
-      h("p", { class: "hint" }, d.low_latency ? "Model delay 10 ms. Slightly less clean and uses more CPU." : "Model delay 30 ms. The low-latency model saves 20 ms."));
+    body.push(
+      micSection(slider({ label: "Strength", min: 6, max: 100, value: d.strength_db, format: (v) => (v >= 100 ? "Max" : `${v} dB`), onInput: (v) => { d.strength_db = v; sendMic(); } })),
+      micSection(slider({ label: "Residual cleanup", min: 0, max: 0.05, step: 0.005, value: d.post_filter, format: (v) => (v === 0 ? "Off" : v.toFixed(3)), onInput: (v) => { d.post_filter = v; sendMic(); } })),
+      micSection(ll.el, h("p", { class: "hint" }, d.low_latency ? "Model delay 10 ms. Slightly less clean and uses more CPU." : "Model delay 30 ms. The low-latency model saves 20 ms.")));
   }
   if (n.id === "gate") {
     const g = mic.gate;
-    body.push(h("p", { class: "hint" }, "Cuts room noise between words. Stay quiet for a moment and set the threshold just above the input meter."),
-      slider({ label: "Threshold", min: -80, max: -10, value: g.threshold_db, format: fmtDbInt, onInput: (v) => { g.threshold_db = v; placeGate(); sendMic(); } }),
-      slider({ label: "Closed attenuation", min: -80, max: -3, value: g.range_db, format: fmtDbInt, onInput: (v) => { g.range_db = v; sendMic(); } }),
-      slider({ label: "Attack", min: 0.5, max: 50, step: 0.5, value: g.attack_ms, format: fmtMs, onInput: (v) => { g.attack_ms = v; sendMic(); } }),
-      slider({ label: "Hold", min: 0, max: 1000, step: 10, value: g.hold_ms, format: fmtMs, onInput: (v) => { g.hold_ms = v; sendMic(); } }),
-      slider({ label: "Release", min: 10, max: 1000, step: 10, value: g.release_ms, format: fmtMs, onInput: (v) => { g.release_ms = v; sendMic(); } }));
+    const out = h("output", { class: "num" }, fmtDbInt(g.threshold_db));
+    const range = h("input", { type: "range", min: String(GATE_MIN), max: String(GATE_MAX), step: "1", value: String(g.threshold_db), "aria-label": "Gate threshold" });
+    const track = h("div", { class: "gate-track", id: "gate-track" },
+      h("i", { class: "gate-open" }), h("i", { class: "gate-level" }), h("i", { class: "gate-mark" }), range);
+    const placeThreshold = () => track.style.setProperty("--th", `${gatePct(g.threshold_db)}%`);
+    range.addEventListener("input", () => { g.threshold_db = range.valueAsNumber; out.textContent = fmtDbInt(g.threshold_db); placeThreshold(); placeGate(); sendMic(); });
+    placeThreshold();
+    const defaults = { attack_ms: 2, hold_ms: 150, release_ms: 120 };
+    const fields = {
+      attack_ms: valueField({ label: "Attack", value: g.attack_ms, unit: "ms", min: 0.5, max: 50, step: 0.5, onChange: (v) => { g.attack_ms = v; sendMic(); } }),
+      hold_ms: valueField({ label: "Hold", value: g.hold_ms, unit: "ms", min: 0, max: 1000, step: 10, onChange: (v) => { g.hold_ms = v; sendMic(); } }),
+      release_ms: valueField({ label: "Release", value: g.release_ms, unit: "ms", min: 10, max: 1000, step: 10, onChange: (v) => { g.release_ms = v; sendMic(); } }),
+    };
+    const reset = h("button", { type: "button", class: "linkish" }, "Reset to defaults");
+    reset.addEventListener("click", () => { Object.assign(g, defaults); for (const [k, f] of Object.entries(fields)) f.set(g[k]); sendMic(); });
+    body.push(
+      micSection(h("div", { class: "ctl" }, h("label", {}, "Threshold"), out), track,
+        h("div", { class: "gate-caption" }, h("span", { id: "gate-caption" }, h("i", { class: "swatch" }), "Room noise –"), h("span", { class: "num" }, "−80 … 0"))),
+      micSection(slider({ label: "How much to cut when closed", min: -80, max: -3, value: g.range_db, format: fmtDbInt, onInput: (v) => { g.range_db = v; sendMic(); } })),
+      micSection(h("div", { class: "sec-head" }, h("span", {}, "Timing"), reset),
+        h("div", { class: "vfields" }, fields.attack_ms, fields.hold_ms, fields.release_ms),
+        h("p", { class: "hint small" }, "Drag a value up or down, or type a new one.")));
   }
   if (n.id === "eq") {
-    body.push(eqEditor(mic.eq, () => { sendMic(); renderChain(); }));
+    body.push(micSection(eqEditor(mic.eq, () => { sendMic(); renderChain(); }, { showSwitch: false })));
   }
   if (n.id === "comp") {
     const c = mic.compressor;
-    body.push(h("p", { class: "hint" }, "Evens out loud and quiet speech so you stay at one level in Discord."),
-      slider({ label: "Threshold", min: -60, max: 0, value: c.threshold_db, format: fmtDbInt, onInput: (v) => { c.threshold_db = v; sendMic(); } }),
-      slider({ label: "Ratio", min: 1, max: 20, step: 0.1, value: c.ratio, format: (v) => `${v.toFixed(1)}:1`, onInput: (v) => { c.ratio = v; sendMic(); } }),
-      slider({ label: "Knee", min: 0, max: 24, value: c.knee_db, format: fmtDbInt, onInput: (v) => { c.knee_db = v; sendMic(); } }),
-      slider({ label: "Attack", min: 0.1, max: 100, step: 0.1, value: c.attack_ms, format: fmtMs, onInput: (v) => { c.attack_ms = v; sendMic(); } }),
-      slider({ label: "Release", min: 10, max: 1000, step: 10, value: c.release_ms, format: fmtMs, onInput: (v) => { c.release_ms = v; sendMic(); } }),
-      slider({ label: "Makeup gain", min: 0, max: 24, step: 0.5, value: c.makeup_db, format: fmtDbInt, onInput: (v) => { c.makeup_db = v; sendMic(); } }));
+    body.push(
+      micSection(slider({ label: "Threshold", min: -60, max: 0, value: c.threshold_db, format: fmtDbInt, onInput: (v) => { c.threshold_db = v; sendMic(); } })),
+      micSection(slider({ label: "Ratio", min: 1, max: 20, step: 0.1, value: c.ratio, format: (v) => `${v.toFixed(1)}:1`, onInput: (v) => { c.ratio = v; sendMic(); } })),
+      micSection(slider({ label: "Knee", min: 0, max: 24, value: c.knee_db, format: fmtDbInt, onInput: (v) => { c.knee_db = v; sendMic(); } })),
+      micSection(slider({ label: "Makeup gain", min: 0, max: 24, step: 0.5, value: c.makeup_db, format: fmtDbInt, onInput: (v) => { c.makeup_db = v; sendMic(); } })),
+      micSection(h("div", { class: "sec-head" }, h("span", {}, "Timing")),
+        h("div", { class: "vfields two" },
+          valueField({ label: "Attack", value: c.attack_ms, unit: "ms", min: 0.1, max: 100, step: 0.1, onChange: (v) => { c.attack_ms = v; sendMic(); } }),
+          valueField({ label: "Release", value: c.release_ms, unit: "ms", min: 10, max: 1000, step: 10, onChange: (v) => { c.release_ms = v; sendMic(); } })),
+        h("p", { class: "hint small" }, "Drag a value up or down, or type a new one.")));
   }
   if (n.id === "limiter") {
-    body.push(h("p", { class: "hint" }, "Catches sudden peaks, like a laugh or a desk bump, at −1 dBFS so the Virtual Mic never clips. Normal speech passes untouched and it adds no delay."));
+    body.push(micSection(h("div", { class: "ctl" }, h("label", {}, "Turning peaks down by"), h("output", { class: "num", id: "limiter-now" }, "0.0 dB")),
+      mic.limiter?.enabled === false ? h("p", { class: "hint warn" }, "Off: loud peaks can clip and distort what others hear.") : null));
   }
   if (n.id === "output") {
-    body.push(h("p", { class: "hint" }, `In Discord, OBS or TeamSpeak choose ${virtualMicName() || "the Virtual Mic cable's Output"} as the microphone, and turn off their own noise suppression.`),
-      slider({ label: "Output gain", min: -20, max: 20, step: 0.5, value: mic.gain_db, format: fmtDbInt, onInput: (v) => { mic.gain_db = v; sendMic(); } }));
+    body.push(
+      micSection(h("p", { class: "hint" }, `In Discord, OBS or TeamSpeak choose ${virtualMicName() || "the Virtual Mic cable's Output"} as the microphone, and turn off their own noise suppression.`)),
+      micSection(slider({ label: "Output gain", min: -20, max: 20, step: 0.5, value: mic.gain_db, format: fmtDbInt, onInput: (v) => { mic.gain_db = v; sendMic(); updateStrips(); } })));
   }
-  pane.replaceChildren(h("h3", {}, n.name, h("span", { class: "spacer" }), onToggle ? onToggle.el : null), ...body);
+  pane.classList.toggle("off", Boolean(n.toggle) && !mic[n.toggle].enabled);
+  pane.replaceChildren(
+    h("div", { class: "card-head row" }, h("div", {}, h("h3", {}, n.name), h("p", {}, n.help)), toggle ? toggle.el : null),
+    ...body);
+  if (lastMicMeters) updateMicMeters(lastMicMeters);
+}
+
+// ---------- levels ----------
+function levelBar(label, id, { marker = false, reverse = false } = {}) {
+  return h("div", { class: "lvl" },
+    h("div", { class: "lvl-head" }, h("span", {}, label), h("span", { class: "num", id: `${id}-db` }, "–")),
+    h("div", { class: "lvl-bar" + (reverse ? " gr" : ""), id }, h("i", { class: "lit" }), marker ? h("i", { class: "gmark", id: "gate-marker" }) : null));
+}
+
+function levelsCard() {
+  return h("section", { class: "card mic-levels" },
+    h("div", { class: "card-head" }, h("h3", {}, "Levels")),
+    h("div", { class: "lvl-list" },
+      levelBar("Mic input", "mic-in", { marker: true }),
+      levelBar("Virtual mic output", "mic-out"),
+      levelBar("Compressor gain reduction", "mic-gr", { reverse: true }),
+      h("div", { class: "hscale", "aria-hidden": "true" }, ["−60", "−48", "−36", "−24", "−12", "0 dB"].map((t) => h("span", {}, t))),
+      h("p", { class: "legend" }, h("i", { class: "gmark-key" }), "Gate threshold")));
 }
 
 function placeGate() {
   const marker = $("#gate-marker");
   if (marker) marker.style.setProperty("--m", `${meterPct(snap.config.mic.gate.threshold_db)}%`);
+  marker?.toggleAttribute("hidden", !snap.config.mic.gate.enabled);
 }
 
+let lastMicMeters = null;
 function updateMicMeters(m) {
+  lastMicMeters = m;
   const mic = snap.config.mic;
   const set = (id, pct, text) => {
     const bar = $(`#${id} .lit`);
@@ -761,25 +984,77 @@ function updateMicMeters(m) {
     const label = $(`#${id}-db`);
     if (label) label.textContent = text;
   };
-  set("mic-in", meterPct(m.input_db), `${fmtDb(m.input_db)} dB`);
-  set("mic-out", meterPct(m.output_db), `${fmtDb(m.output_db)} dB`);
+  const missing = snap.status.Microphone !== undefined && snap.status.Microphone !== "running";
+  set("mic-in", missing ? 0 : meterPct(m.input_db), missing ? "–" : `${fmtDb(m.input_db)} dB`);
+  set("mic-out", missing ? 0 : meterPct(m.output_db), missing ? "–" : `${fmtDb(m.output_db)} dB`);
   set("mic-gr", clamp(-m.gain_reduction_db / 20, 0, 1) * 100, `${fmtDb(m.gain_reduction_db)} dB`);
   placeGate();
+  // Noise gate card: the threshold track doubles as the live input meter.
+  const track = $("#gate-track");
+  if (track) track.style.setProperty("--lvl", `${missing ? 0 : gatePct(m.input_db)}%`);
+  const caption = $("#gate-caption");
+  if (caption) caption.lastChild.textContent = missing ? "No microphone: nothing to measure"
+    : !mic.gate.enabled ? `Level ${fmtDb(m.input_db)} dB · the gate is off`
+    : m.gate_open ? `Level ${fmtDb(m.input_db)} dB, so the gate is open`
+    : `Room noise ${fmtDb(m.input_db)} dB, so the gate is closed`;
+  const limiterNow = $("#limiter-now");
+  if (limiterNow) limiterNow.textContent = `${fmtDb(m.limiter_db)} dB`;
+
+  // Chain tabs: a status line and a dot per step. "warn" marks a step that isn't ready.
   const states = {
-    input: `${fmtDb(m.input_db)} dBFS`,
-    denoise: !mic.denoise.enabled ? "off" : m.denoise_ready ? `−${Math.max(0, m.noise_reduction_db).toFixed(0)} dB noise` : "loading model",
-    gate: !mic.gate.enabled ? "off" : m.gate_open ? "open" : "closed",
-    eq: mic.eq.enabled ? mic.eq.preset : "off",
-    comp: mic.compressor.enabled ? `${fmtDb(m.gain_reduction_db)} dB` : "off",
-    limiter: m.limiter_db < -0.05 ? `${fmtDb(m.limiter_db)} dB` : "idle",
-    output: mic.muted ? "muted" : `${fmtDb(m.output_db)} dBFS`,
+    input: missing ? ["No microphone", "warn"] : [`${fmtDb(m.input_db)} dBFS`, "ok"],
+    denoise: !mic.denoise.enabled ? ["Off", "off"] : m.denoise_ready ? [`−${Math.max(0, m.noise_reduction_db).toFixed(0)} dB noise`, "ok"] : ["Loading model…", "warn"],
+    gate: !mic.gate.enabled ? ["Off", "off"] : [m.gate_open ? "Open" : "Closed", "ok"],
+    eq: mic.eq.enabled ? [mic.eq.preset, "ok"] : ["Off", "off"],
+    comp: mic.compressor.enabled ? [`${fmtDb(m.gain_reduction_db)} dB`, "ok"] : ["Off", "off"],
+    limiter: mic.limiter?.enabled === false ? ["Off", "off"] : [m.limiter_db < -0.05 ? `${fmtDb(m.limiter_db)} dB` : "Idle", "ok"],
+    output: mic.muted ? ["Muted", "warn"] : missing ? ["Silent", "warn"] : [`${fmtDb(m.output_db)} dBFS`, "ok"],
   };
-  for (const [id, text] of Object.entries(states)) {
+  for (const [id, [text, kind]] of Object.entries(states)) {
     const el = document.querySelector(`[data-state="${id}"]`);
-    if (el) el.textContent = text;
+    if (el) { el.textContent = text; el.className = `cstate ${kind}`; }
+    const dot = document.querySelector(`[data-led="${id}"]`);
+    if (dot) dot.className = `cdot ${kind}`;
   }
-  const gateLed = document.querySelector('[data-led="gate"]');
-  if (gateLed && mic.gate.enabled) gateLed.className = "led " + (m.gate_open ? "on" : "act");
+}
+
+// ---------- mic test ----------
+function micTestCard() {
+  const button = (id, label, action, cls = "btn") => {
+    const b = h("button", { type: "button", class: cls, id }, label);
+    b.addEventListener("click", () => invoke("mic_test", { action: b.dataset.action || action }).catch(showError));
+    return b;
+  };
+  return h("section", { class: "card mictest", id: "mic-test" },
+    h("div", { class: "card-head" }, h("h3", {}, "Test your mic"),
+      h("p", { id: "mic-test-hint" }, "Record 5 seconds, then compare the filtered and original versions in your headphones.")),
+    h("div", { class: "mictest-body" },
+      h("div", { class: "mictest-row" },
+        button("mic-test-record", "● Record 5 s", "record", "btn record"),
+        button("mic-test-play", "▶ Filtered", "play"),
+        button("mic-test-original", "▶ Original", "play_original")),
+      h("div", { class: "mictest-bar", "aria-hidden": "true" }, h("i", { id: "mic-test-progress" })),
+      h("p", { class: "hint small", id: "mic-test-note" }, "Play buttons unlock after recording.")));
+}
+
+function updateMicTest(t) {
+  const panel = $("#mic-test");
+  if (!panel || !t) return;
+  const muted = snap.config.mic.muted;
+  const busy = t.phase !== "idle";
+  const record = $("#mic-test-record");
+  // While recording or playing, the record button stops it.
+  record.dataset.action = busy ? "stop" : "record";
+  record.textContent = t.phase === "recording" ? `■ Stop · ${Math.ceil(5 * (1 - t.progress))} s` : t.phase === "playing" ? "■ Stop" : "● Record 5 s";
+  record.disabled = !busy && muted;
+  $("#mic-test-play").disabled = busy || !t.recorded;
+  $("#mic-test-original").disabled = busy || !t.recorded;
+  $("#mic-test-progress").style.width = `${busy ? t.progress * 100 : 0}%`;
+  panel.dataset.phase = t.phase;
+  $("#mic-test-note").textContent = muted && !busy ? "Your mic is muted. Unmute it to record a test."
+    : t.phase === "recording" ? "Speak normally, the way you would in Discord."
+    : t.phase === "playing" ? (t.original ? "Playing your mic without any filters." : "Playing with every filter applied, as others hear you.")
+    : t.recorded ? "Compare the two, or record again." : "Play buttons unlock after recording.";
 }
 
 // ---------- settings ----------
@@ -1193,6 +1468,7 @@ const SHORTCUT_GROUPS = [
     ["mic.gate", "Noise gate on/off"],
     ["mic.eq", "EQ on/off"],
     ["mic.compressor", "Compressor on/off"],
+    ["mic.limiter", "Limiter on/off"],
   ] },
 ];
 const groupOf = (action) => SHORTCUT_GROUPS.find((g) => g.actions.some(([id]) => id === action));

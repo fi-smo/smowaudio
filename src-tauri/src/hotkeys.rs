@@ -2,7 +2,7 @@
 //!
 //! Action ids:
 //! - `channel.<game|chat|media|aux|master>.<volume_up|volume_down|mute|eq>`
-//! - `mic.<mute|push_to_talk|push_to_mute|gain_up|gain_down|monitor|denoise|low_latency|gate|eq|compressor>`
+//! - `mic.<mute|push_to_talk|push_to_mute|gain_up|gain_down|monitor|denoise|low_latency|gate|eq|compressor|limiter>`
 //! - `output.<next|previous>`, `app.<mixer|flyout>`, `windows_defaults`
 
 use std::collections::BTreeMap;
@@ -206,6 +206,7 @@ fn run(app: &AppHandle, action: &str, pressed: bool, fine: bool) -> Option<Osd> 
                 "gate" => mic.gate.enabled = !mic.gate.enabled,
                 "eq" => mic.eq.enabled = !mic.eq.enabled,
                 "compressor" => mic.compressor.enabled = !mic.compressor.enabled,
+                "limiter" => mic.limiter.enabled = !mic.limiter.enabled,
                 _ => return None,
             }
             state.set_mic_settings(mic.clone());
@@ -229,6 +230,7 @@ fn run(app: &AppHandle, action: &str, pressed: bool, fine: bool) -> Option<Osd> 
                 "low_latency" => toggle("mic", "Mic", "Low-latency model", mic.denoise.low_latency),
                 "gate" => toggle("mic", "Mic", "Noise gate", mic.gate.enabled),
                 "eq" => toggle("mic", "Mic", "EQ", mic.eq.enabled),
+                "limiter" => toggle("mic", "Mic", "Limiter", mic.limiter.enabled),
                 _ => toggle("mic", "Mic", "Compressor", mic.compressor.enabled),
             })
         }

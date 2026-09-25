@@ -24,6 +24,19 @@ impl Default for EqSettings {
     }
 }
 
+/// The last step before the virtual mic: catches peaks at −1 dBFS so it never clips.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LimiterSettings {
+    pub enabled: bool,
+}
+
+impl Default for LimiterSettings {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MicSettings {
@@ -31,6 +44,7 @@ pub struct MicSettings {
     pub gate: GateSettings,
     pub eq: EqSettings,
     pub compressor: CompressorSettings,
+    pub limiter: LimiterSettings,
     pub gain_db: f32,
     pub muted: bool,
     /// Play the processed mic in your own headphones ("listen to my mic").
@@ -44,6 +58,7 @@ impl Default for MicSettings {
             gate: GateSettings::default(),
             eq: EqSettings::default(),
             compressor: CompressorSettings::default(),
+            limiter: LimiterSettings::default(),
             gain_db: 0.0,
             muted: false,
             monitor: false,
@@ -148,10 +163,12 @@ impl MicChain {
         for s in frame.iter_mut() {
             *s *= gain;
         }
-        self.limiter.process(frame, 1);
+        if self.settings.limiter.enabled {
+            self.limiter.process(frame, 1);
+        }
 
         self.meters.output_db = peak_db(frame);
-        self.meters.limiter_db = self.limiter.gain_reduction_db();
+        self.meters.limiter_db = if self.settings.limiter.enabled { self.limiter.gain_reduction_db() } else { 0.0 };
         self.meters.gain_reduction_db = self.compressor.gain_reduction_db();
         self.meters.gate_open = !self.settings.gate.enabled || self.gate.is_open();
     }
