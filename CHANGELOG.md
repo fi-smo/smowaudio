@@ -3,6 +3,12 @@
 Every release needs a section here: the release build takes its notes from it, and the app shows
 them under Settings → Updates.
 
+## 0.9.0 — 2026-09-25
+- Each pair of headphones or speakers keeps its own master volume and EQ (Settings → Devices)
+- Updates install automatically while the window is closed and nothing is playing; switch it off in Settings → Updates
+- A settings file that can't be read is kept aside instead of being replaced with defaults
+- The log shows local times and stays small
+
 ## 0.8.1 — 2026-09-25
 - The tray flyout's level meters are exactly as wide as the sliders above them
 
