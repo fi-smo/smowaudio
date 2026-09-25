@@ -1,6 +1,6 @@
 [package]
 name = "smowaudio"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 description = "Lightweight audio mixer with virtual mic processing"
 
@@ -46,7 +46,6 @@ features = [
   "Win32_Devices_FunctionDiscovery",
   "Win32_UI_Shell_PropertiesSystem",
   "Win32_Security",
-  "Win32_Security_Credentials",
 ]
 
 # Neural network inference is unusably slow unoptimized, even in dev builds.

@@ -1,8 +1,7 @@
 //! Updates from the public GitHub repo. The release workflow builds a signed installer, attaches
 //! it to a GitHub Release and writes `latest.json` (version, notes, signature, installer URL) to
 //! the `updates` branch. The app reads that file and downloads the installer through the GitHub
-//! API; the updater checks the signature before installing. A saved token is sent along if there
-//! is one (only needed if the repo is ever private again).
+//! API; the updater checks the signature before installing.
 
 use std::time::Duration;
 
@@ -22,8 +21,6 @@ const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 pub struct UpdateStatus {
     /// The running version.
     pub current: String,
-    /// End of the saved token (e.g. "…a1B2"), or None if there's no token.
-    pub token_hint: Option<String>,
     /// A newer version that can be installed.
     pub available: Option<String>,
     /// Its release notes.
@@ -34,8 +31,6 @@ pub struct UpdateStatus {
     pub checked: bool,
     /// When the last successful check finished (Unix time in ms), for "checked 2 min ago".
     pub checked_at: Option<u64>,
-    /// The saved token with its middle hidden, e.g. "github_pat_••••UzW9".
-    pub token_mask: Option<String>,
 }
 
 #[derive(Default)]
@@ -48,20 +43,7 @@ pub fn status(app: &AppHandle) -> UpdateStatus {
     let updates = app.state::<AppState>();
     let mut status = updates.updates.status.lock().clone();
     status.current = app.package_info().version.to_string();
-    let token = crate::secrets::read_token();
-    status.token_hint = token.as_deref().map(hint);
-    status.token_mask = token.as_deref().map(mask);
     status
-}
-
-fn mask(token: &str) -> String {
-    let prefix = ["github_pat_", "ghp_"].into_iter().find(|p| token.starts_with(p)).unwrap_or("");
-    format!("{prefix}••••{}", hint(token).trim_start_matches('…'))
-}
-
-fn hint(token: &str) -> String {
-    let tail: String = token.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
-    format!("…{tail}")
 }
 
 /// Asks GitHub whether a newer version exists. Returns the new version, or None if up to date.
@@ -98,17 +80,12 @@ pub async fn check(app: &AppHandle) -> Result<Option<String>, String> {
 }
 
 async fn check_inner(app: &AppHandle) -> Result<Option<Update>, String> {
-    let auth = match crate::secrets::read_token() {
-        Some(token) => Some(HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| "The token has characters GitHub never uses")?),
-        None => None,
-    };
     let endpoint: Url = format!("https://api.github.com/repos/{REPO}/contents/latest.json?ref=updates")
         .parse()
         .map_err(|e| format!("{e}"))?;
     let updater = app
         .updater_builder()
         .endpoints(vec![endpoint])
-        .and_then(|b| match auth { Some(auth) => b.header(header::AUTHORIZATION, auth), None => Ok(b) })
         // The raw file rather than GitHub's JSON description of it.
         .and_then(|b| b.header(header::ACCEPT, "application/vnd.github.raw+json"))
         .and_then(|b| b.header(header::USER_AGENT, "Smowaudio"))
@@ -132,10 +109,10 @@ async fn check_inner(app: &AppHandle) -> Result<Option<Update>, String> {
 
 fn friendly(message: &str) -> String {
     let lower = message.to_lowercase();
-    if lower.contains("401") || lower.contains("403") {
-        "GitHub refused the token. Check it hasn't expired and can read the smowaudio repo.".into()
+    if lower.contains("403") || lower.contains("429") {
+        "GitHub is limiting update checks from this network for now. Try again in an hour.".into()
     } else if lower.contains("404") {
-        "No release published yet (or the token can't see the repo).".into()
+        "No release published yet.".into()
     } else if lower.contains("dns") || lower.contains("connect") || lower.contains("timed out") {
         "Couldn't reach GitHub. Check your internet connection.".into()
     } else {

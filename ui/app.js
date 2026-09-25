@@ -1067,12 +1067,8 @@ function healthBlock() {
 }
 
 // ---------- settings: updates ----------
-const TOKEN_PAGE = "https://github.com/settings/personal-access-tokens/new";
-const TOKEN_PREFIX = /^(github_pat_|ghp_)/;
 let updateStatus = null;
 let installing = false;
-let tokenEditing = false;
-let removeArmed = null; // timer while "Confirm remove" is showing
 
 function updatesTab() {
   const check = h("button", { type: "button", class: "btn", id: "update-check" }, "Check for updates");
@@ -1086,81 +1082,7 @@ function updatesTab() {
     h("div", { class: "update-extra", id: "update-extra", hidden: true },
       h("div", { class: "update-progress", id: "update-progress", hidden: true }, h("i")),
       h("p", { class: "update-notes", id: "update-notes", hidden: true })));
-  const access = h("section", { class: "card" },
-    h("div", { class: "card-head" }, h("h3", {}, "GitHub access"),
-      h("p", {}, "Updates come from the public fi-smo/smowaudio repo, so no token is needed. Add one only if the repo is ever made private; it's kept in Windows Credential Manager, not the config file.")),
-    h("div", { id: "token-area" }),
-    tokenHowTo());
-  return [version, access];
-}
-
-function tokenHowTo() {
-  const link = h("button", { type: "button", class: "linkbtn" }, "Open fine-grained tokens on GitHub");
-  link.addEventListener("click", () => invoke("open_url", { url: TOKEN_PAGE }).catch(showError));
-  const details = h("details", { class: "howto", id: "token-howto" },
-    h("summary", {}, "How to create a token"),
-    h("ol", {},
-      h("li", {}, link),
-      h("li", {}, "Repository access → ", h("b", {}, "Only select repositories"), " → smowaudio"),
-      h("li", {}, "Repository permissions → ", h("b", {}, "Contents: Read-only")),
-      h("li", {}, "Generate, copy, then paste it here with Replace")));
-  details.open = false;
-  return details;
-}
-
-function renderTokenArea() {
-  const area = $("#token-area");
-  const st = updateStatus;
-  if (!area || !st) return;
-  const mode = st.token_hint && !tokenEditing ? "saved" : "edit";
-  // Never rebuild the field while it's showing: that would wipe a token being typed.
-  if (mode === "edit" && area.dataset.mode === "edit" && $("#update-token")) return;
-  area.dataset.mode = mode;
-  if (mode === "saved") {
-    const replace = h("button", { type: "button", class: "btn" }, "Replace");
-    replace.addEventListener("click", () => {
-      clearTimeout(removeArmed);
-      removeArmed = null;
-      tokenEditing = true;
-      renderTokenArea();
-      $("#update-token")?.focus();
-    });
-    const remove = h("button", { type: "button", class: "btn danger" }, removeArmed ? "Confirm remove" : "Remove");
-    remove.addEventListener("click", async () => {
-      if (!removeArmed) {
-        // Removing asks once more, inline, for three seconds.
-        removeArmed = setTimeout(() => { removeArmed = null; renderTokenArea(); }, 3000);
-        renderTokenArea();
-        return;
-      }
-      clearTimeout(removeArmed);
-      removeArmed = null;
-      try { updateStatus = await invoke("set_github_token", { token: "" }); toast("Token removed"); renderUpdates(); } catch (e) { showError(e); }
-    });
-    area.replaceChildren(h("div", { class: "srow fit token-saved" },
-      h("div", { class: "srow-text" }, h("div", { class: "srow-label" }, h("span", { class: "dot" }), "Token saved", h("span", { class: "mask" }, st.token_mask ?? st.token_hint))),
-      h("div", { class: "srow-control" }, replace, remove)));
-    return;
-  }
-  const input = h("input", { class: "input", id: "update-token", type: "password", autocomplete: "off", spellcheck: "false", placeholder: "github_pat_…", "aria-label": "GitHub token" });
-  const save = h("button", { type: "button", class: "btn", disabled: true }, "Save token");
-  // A half-typed token counts as an unapplied edit, so background refreshes don't wipe it.
-  input.addEventListener("input", () => { settingsDirty = true; save.disabled = !TOKEN_PREFIX.test(input.value.trim()); });
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !save.disabled) save.click(); });
-  save.addEventListener("click", async () => {
-    try {
-      updateStatus = await invoke("set_github_token", { token: input.value });
-      tokenEditing = false;
-      area.dataset.mode = "";
-      settingsDirty = false;
-      toast("Token saved in Windows Credential Manager");
-      renderUpdates();
-      checkUpdates();
-    } catch (e) { showError(e); }
-  });
-  const cancel = st.token_hint ? h("button", { type: "button", class: "iconbtn" }, "Cancel") : null;
-  cancel?.addEventListener("click", () => { tokenEditing = false; settingsDirty = false; area.dataset.mode = ""; renderTokenArea(); });
-  area.replaceChildren(h("div", { class: "srow token-edit" }, h("div", { class: "token-row" }, input, save, cancel)));
+  return [version];
 }
 
 async function refreshUpdates() {
@@ -1198,7 +1120,6 @@ function renderUpdates() {
   notes.hidden = !(st.available && st.notes);
   notes.textContent = st.notes ?? "";
   $("#update-extra").hidden = notes.hidden && $("#update-progress").hidden;
-  renderTokenArea();
 }
 
 async function checkUpdates(manual = false) {

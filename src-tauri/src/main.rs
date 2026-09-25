@@ -7,7 +7,6 @@ mod engine;
 mod hotkeys;
 mod icons;
 mod osd;
-mod secrets;
 mod updates;
 
 use std::collections::BTreeMap;
@@ -186,18 +185,6 @@ fn update_status(app: AppHandle) -> updates::UpdateStatus {
     updates::status(&app)
 }
 
-/// Saves (or with an empty value removes) the GitHub token used to download updates.
-#[tauri::command]
-async fn set_github_token(app: AppHandle, token: String) -> CmdResult<updates::UpdateStatus> {
-    let token = token.trim().to_string();
-    if token.is_empty() {
-        secrets::delete_token();
-    } else {
-        secrets::save_token(&token).map_err(|e| format!("Windows couldn't store the token: {e}"))?;
-    }
-    Ok(updates::status(&app))
-}
-
 /// Returns the newer version, or None if this one is the latest.
 #[tauri::command]
 async fn check_for_update(app: AppHandle) -> CmdResult<Option<String>> {
@@ -207,16 +194,6 @@ async fn check_for_update(app: AppHandle) -> CmdResult<Option<String>> {
 #[tauri::command]
 async fn install_update(app: AppHandle) -> CmdResult<()> {
     updates::install(&app).await
-}
-
-/// Opens a GitHub page (token creation, releases) in the default browser.
-#[tauri::command]
-fn open_url(url: String) -> CmdResult<()> {
-    if !url.starts_with("https://github.com/") {
-        return Err("Only GitHub links can be opened".into());
-    }
-    std::process::Command::new("explorer.exe").arg(&url).spawn().map_err(err)?;
-    Ok(())
 }
 
 /// Mic test: "record" (5 s, before and after processing), "play" / "play_original", or "stop".
@@ -755,10 +732,8 @@ fn main() {
             restart_audio,
             clear_hotkeys,
             open_log_folder,
-            set_github_token,
             check_for_update,
             install_update,
-            open_url,
             app_icon,
             assign_app,
             set_launch_at_login,

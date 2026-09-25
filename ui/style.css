@@ -480,9 +480,6 @@ body.osd-body { padding: 8px 8px 16px; display: flex; justify-content: flex-end;
 .pill-update b { color: var(--ok); }
 .update-progress { height: 4px; border-radius: 2px; background: var(--well); overflow: hidden; }
 .update-progress i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .15s linear; }
-.token-row { display: flex; gap: 6px; align-items: center; }
-.token-row .input { flex: 1; min-width: 0; background: var(--raised); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: 13px var(--font-num); user-select: text; }
-.linkbtn { border: 0; background: none; padding: 0; color: var(--focus); cursor: pointer; font: inherit; text-decoration: underline; }
 
 /* ---------- settings: tabs, cards, setting rows ---------- */
 button.pill { font: inherit; font-size: 12px; cursor: pointer; }
@@ -564,19 +561,8 @@ select.input.invalid { border-color: var(--hot); }
 .version { font: 500 15px var(--font-num); color: var(--text); }
 .update-extra { display: grid; gap: 8px; padding: 0 16px 14px; }
 .update-notes { margin: 0; font-size: 12px; color: var(--muted); white-space: pre-line; max-height: 160px; overflow-y: auto; }
-.token-saved .srow-label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
-.token-saved .dot { width: 6px; height: 6px; }
-.token-saved .mask { font: 12px var(--font-num); color: var(--muted); overflow-wrap: anywhere; }
 .btn.danger { color: var(--hot); }
 .btn:disabled { opacity: .5; cursor: default; }
-.srow.token-edit { grid-template-columns: minmax(0, 1fr); }
-.howto { border-top: 1px solid var(--line); padding: 10px 16px 12px; font-size: 12px; }
-.howto summary { cursor: pointer; color: var(--text); font-size: 12px; list-style: none; display: flex; align-items: center; gap: 8px; }
-.howto summary::-webkit-details-marker { display: none; }
-.howto summary::before { content: ""; width: 6px; height: 6px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); transition: transform .15s; }
-.howto[open] summary::before { transform: rotate(45deg); }
-.howto ol { margin: 8px 0 0; padding-left: 34px; color: var(--muted); display: grid; gap: 4px; }
-.howto ol b { color: var(--text); font-weight: 600; }
 
 /* ---------- settings: shortcuts ---------- */
 .sc-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
