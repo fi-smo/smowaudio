@@ -1157,7 +1157,7 @@ listen("update-progress", (e) => {
   const bar = $("#update-progress i");
   if (bar && total) bar.style.width = `${(downloaded / total) * 100}%`;
   const button = $("#update-install");
-  if (button && total) button.textContent = downloaded >= total ? "Installing…" : `Downloading… ${Math.round((downloaded / total) * 100)} %`;
+  if (button && total) button.textContent = downloaded >= total ? "Installing… Smowaudio restarts in a moment" : `Downloading… ${Math.round((downloaded / total) * 100)} %`;
 });
 $("#pill-update").addEventListener("click", () => { setSettingsTab("updates"); setView("settings"); });
 
