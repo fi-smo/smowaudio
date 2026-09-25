@@ -526,7 +526,7 @@ html:has(body.flyout-body), body.flyout-body { background: transparent; }
 .fly-mic-btns .btn { height: 26px; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; padding: 0 8px; }
 .btn.listen[aria-pressed="true"] { border-color: var(--mic); color: var(--mic); background: color-mix(in srgb, var(--mic) 14%, var(--panel)); }
 .fly-foot { display: flex; gap: 8px; }
-.fly-foot .primary { flex: 1; height: 32px; padding-block: 0; }
+.fly-foot .fly-open { flex: 1; height: 32px; padding-block: 0; text-align: center; font-size: 13px; font-weight: 500; color: var(--text); }
 .fly-gear { width: 32px; height: 32px; padding: 0; display: grid; place-items: center; flex: none; }
 .fly-gear svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 
@@ -673,7 +673,17 @@ select.input.invalid { border-color: var(--hot); }
 /* ---------- settings: updates ---------- */
 .version { font: 500 15px var(--font-num); color: var(--text); }
 .update-extra { display: grid; gap: 8px; padding: 0 16px 14px; }
-.update-notes { margin: 0; font-size: 12px; color: var(--muted); white-space: pre-line; max-height: 160px; overflow-y: auto; }
+/* Changelog: one entry per version, newest first. */
+.changes { display: grid; padding: 0 16px 14px; }
+.change { padding: 10px 0; border-top: 1px solid var(--line); }
+.change:first-child { border-top: 0; padding-top: 0; }
+.change header { display: flex; align-items: baseline; gap: 8px; }
+.change header b { font-size: 13px; }
+.change header time { margin-left: auto; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.change .badge { font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; padding: 1px 6px; border-radius: 4px; color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, var(--panel)); }
+.change ul { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 3px; font-size: 12px; color: var(--muted); max-width: 90ch; }
+.change-plain { margin: 0; font-size: 12px; color: var(--muted); white-space: pre-line; }
+.changes-more { justify-self: start; margin-top: 4px; }
 .btn.danger { color: var(--hot); }
 .btn:disabled { opacity: .5; cursor: default; }
 

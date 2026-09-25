@@ -39,9 +39,18 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             "v$version is already released; nothing to do."
             "skip=true" >> $env:GITHUB_OUTPUT
-          } else {
-            "skip=false" >> $env:GITHUB_OUTPUT
+            exit 0
           }
+          "skip=false" >> $env:GITHUB_OUTPUT
+
+          # Notes come from CHANGELOG.md (newest version first), checked here so a missing section
+          # fails in seconds rather than after the build. The release gets this version's section;
+          # latest.json gets the last few, so the app can show everything an update brings.
+          $sections = [regex]::Split((Get-Content CHANGELOG.md -Raw), '(?m)^(?=## )') | Where-Object { $_ -match '^## ' }
+          $mine = $sections | Where-Object { $_ -match "^## v?$([regex]::Escape($version))\s" } | Select-Object -First 1
+          if (-not $mine) { throw "CHANGELOG.md has no '## $version' section" }
+          ($mine -replace '^## [^\r\n]*\r?\n', '').Trim() | Set-Content "$env:RUNNER_TEMP/release-notes.md" -Encoding utf8
+          (($sections | Select-Object -First 10) -join "`n").Trim() | Set-Content "$env:RUNNER_TEMP/update-notes.md" -Encoding utf8
           exit 0
 
       # Real-time scanning of every file the compiler writes slows Windows builds a lot. This is
@@ -89,7 +98,7 @@ jobs:
           if (-not $setup) { throw "The installer wasn't built" }
           $signature = (Get-Content "$($setup.FullName).sig" -Raw).Trim()
 
-          gh release create $tag $setup.FullName --target $env:GITHUB_SHA --title "Smowaudio $env:VERSION" --generate-notes
+          gh release create $tag $setup.FullName --target $env:GITHUB_SHA --title "Smowaudio $env:VERSION" --notes-file "$env:RUNNER_TEMP/release-notes.md"
           if ($LASTEXITCODE -ne 0) { throw "Creating the release failed" }
 
           # The app downloads through the API (the repo is private), so it needs the asset's API URL.
@@ -97,7 +106,7 @@ jobs:
           $asset = $release.assets | Where-Object { $_.name -eq $setup.Name } | Select-Object -First 1
           $manifest = [ordered]@{
             version   = $env:VERSION
-            notes     = $release.body
+            notes     = (Get-Content "$env:RUNNER_TEMP/update-notes.md" -Raw).Trim()
             pub_date  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
             platforms = @{ "windows-x86_64" = @{ signature = $signature; url = $asset.url } }
           } | ConvertTo-Json -Depth 5

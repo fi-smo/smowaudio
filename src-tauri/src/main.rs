@@ -243,6 +243,12 @@ fn update_status(app: AppHandle) -> updates::UpdateStatus {
     updates::status(&app)
 }
 
+/// The changelog this version was built with (Markdown, newest version first).
+#[tauri::command]
+fn changelog() -> &'static str {
+    include_str!("../../CHANGELOG.md")
+}
+
 /// Returns the newer version, or None if this one is the latest.
 #[tauri::command]
 async fn check_for_update(app: AppHandle) -> CmdResult<Option<String>> {
@@ -812,6 +818,7 @@ fn main() {
             get_config,
             mic_test,
             update_status,
+            changelog,
             restart_audio,
             measure_delay,
             clear_hotkeys,

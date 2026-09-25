@@ -1438,9 +1438,85 @@ function updatesTab() {
       h("div", { class: "srow-text" }, h("div", { class: "version num", id: "update-version" }), h("p", { class: "srow-help", id: "update-state" })),
       h("div", { class: "srow-control" }, install, check)),
     h("div", { class: "update-extra", id: "update-extra", hidden: true },
-      h("div", { class: "update-progress", id: "update-progress", hidden: true }, h("i")),
-      h("p", { class: "update-notes", id: "update-notes", hidden: true })));
-  return [version];
+      h("div", { class: "update-progress", id: "update-progress", hidden: true }, h("i"))));
+  const whatsNew = h("section", { class: "card", id: "whats-new", hidden: true },
+    h("div", { class: "card-head" }, h("h3", { id: "whats-new-title" }, "What's new")),
+    h("div", { class: "changes", id: "whats-new-body" }));
+  const history = h("section", { class: "card", id: "changelog-card" },
+    h("div", { class: "card-head" }, h("h3", {}, "Changelog"), h("p", {}, "What changed in each version.")),
+    h("div", { class: "changes", id: "changelog-body" }));
+  if (!changelog) {
+    invoke("changelog").then((md) => { changelog = parseChangelog(md); renderChangelog(); }).catch(() => {});
+  }
+  return [version, whatsNew, history];
+}
+
+// ---------- settings: changelog ----------
+// CHANGELOG.md is built into the app for the history; an update's manifest carries the sections
+// of the versions it brings, in the same format.
+let changelog = null; // [{ version, date, items }]
+let changelogAll = false;
+const CHANGELOG_SHOWN = 5;
+
+function parseChangelog(md) {
+  const entries = [];
+  for (const line of md.split(/\r?\n/)) {
+    const head = line.match(/^##\s+v?(\d+\.\d+\.\d+)\s*(?:[—–-]\s*(\d{4}-\d{2}-\d{2}))?/);
+    if (head) entries.push({ version: head[1], date: head[2] ?? null, items: [] });
+    else if (entries.length && /^\s*[-*]\s+/.test(line)) entries.at(-1).items.push(line.replace(/^\s*[-*]\s+/, "").trim());
+  }
+  return entries;
+}
+
+/** Compares "1.2.3" versions: negative when a is older. */
+function compareVersions(a, b) {
+  const pa = a.split(".").map(Number), pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if (pa[i] !== pb[i]) return (pa[i] ?? 0) - (pb[i] ?? 0);
+  return 0;
+}
+
+function formatDate(iso) {
+  if (!iso) return null;
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
+
+function changeEntry(e, badge) {
+  return h("article", { class: "change" },
+    h("header", {},
+      h("b", { class: "num" }, e.version),
+      badge ? h("span", { class: "badge" }, badge) : null,
+      e.date ? h("time", { datetime: e.date }, formatDate(e.date)) : null),
+    h("ul", {}, ...e.items.map((item) => h("li", {}, item))));
+}
+
+function renderChangelog() {
+  const body = $("#changelog-body");
+  if (!body || !changelog) return;
+  const current = updateStatus?.current;
+  const shown = changelogAll ? changelog : changelog.slice(0, CHANGELOG_SHOWN);
+  const more = changelog.length - shown.length;
+  const toggle = more > 0 || changelogAll
+    ? h("button", { type: "button", class: "btn changes-more", id: "changelog-more" }, changelogAll ? "Show fewer" : `Show ${more} older version${more === 1 ? "" : "s"}`)
+    : null;
+  toggle?.addEventListener("click", () => { changelogAll = !changelogAll; renderChangelog(); });
+  body.replaceChildren(...[...shown.map((e) => changeEntry(e, e.version === current ? "Installed" : null)), toggle].filter(Boolean));
+}
+
+function renderWhatsNew() {
+  const card = $("#whats-new");
+  if (!card) return;
+  const st = updateStatus;
+  if (!st?.available) { card.hidden = true; return; }
+  const notes = st.notes ?? "";
+  const entries = parseChangelog(notes).filter((e) => compareVersions(e.version, st.current) > 0);
+  // Notes from before the changelog existed are plain text; skip GitHub's "Full Changelog" link.
+  const plain = notes.split(/\r?\n/).filter((l) => l.trim() && !/Full Changelog/i.test(l)).join("\n");
+  card.hidden = !entries.length && !plain;
+  $("#whats-new-title").textContent = entries.length > 1 ? `What's new since ${st.current}` : `What's new in ${st.available}`;
+  $("#whats-new-body").replaceChildren(...(entries.length
+    ? entries.map((e) => changeEntry(e, e.version === st.available ? "New" : null))
+    : [h("p", { class: "change-plain" }, plain)]));
 }
 
 async function refreshUpdates() {
@@ -1474,10 +1550,9 @@ function renderUpdates() {
   $("#update-install").hidden = !st.available;
   $("#update-install").disabled = installing;
   $("#update-check").disabled = installing;
-  const notes = $("#update-notes");
-  notes.hidden = !(st.available && st.notes);
-  notes.textContent = st.notes ?? "";
-  $("#update-extra").hidden = notes.hidden && $("#update-progress").hidden;
+  $("#update-extra").hidden = $("#update-progress").hidden;
+  renderWhatsNew();
+  renderChangelog();
 }
 
 async function checkUpdates(manual = false) {
