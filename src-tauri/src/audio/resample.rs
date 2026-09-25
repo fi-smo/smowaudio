@@ -8,6 +8,10 @@
 //! buffer runs dry while input is still arriving (the devices move audio in bigger bursts
 //! than expected), and shrinks slowly toward the lowest fill actually observed when there
 //! is spare room. After growing it won't shrink below that size for 5 minutes.
+//!
+//! Extra delay never lingers: when the output restarts (a Bluetooth speaker reconnecting, a
+//! device switch) the reader starts over from the target, and a backlog that stays above the
+//! target for half a second is dropped at once rather than drained over minutes.
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -28,6 +32,13 @@ const HEADROOM_MS: f64 = 3.0;
 const INPUT_STALL_FRAMES: u64 = 4_800;
 const SHRINK_EVERY_FRAMES: u64 = 48_000 * 5;
 const SHRINK_COOLDOWN_FRAMES: u64 = 48_000 * 300;
+/// After a (re)start, underruns come from the output device settling in (Bluetooth speakers
+/// stutter while they connect), not from a too-small buffer, so they don't grow the target.
+const GRACE_FRAMES: u64 = 48_000 * 2;
+/// How often to check for a backlog: the lowest fill over this long, well above the target,
+/// means audio is queued that the drift correction would take minutes to drain.
+const BACKLOG_WINDOW_FRAMES: u64 = 24_000;
+const BACKLOG_MARGIN_MS: f64 = 10.0;
 
 fn ms_to_frames(ms: f64) -> f64 {
     (SAMPLE_RATE * ms / 1000.0).round()
@@ -134,6 +145,9 @@ pub struct DriftReader {
     frames_since_underrun: u64,
     window_frames: u64,
     window_min_fill: usize,
+    grace_frames: u64,
+    backlog_frames: u64,
+    backlog_min_fill: usize,
     pub stats: Arc<BridgeStats>,
 }
 
@@ -155,8 +169,22 @@ impl DriftReader {
             frames_since_underrun: 0,
             window_frames: 0,
             window_min_fill: usize::MAX,
+            grace_frames: GRACE_FRAMES,
+            backlog_frames: 0,
+            backlog_min_fill: usize::MAX,
             stats,
         }
+    }
+
+    /// Call when the output stream (re)starts: audio queued while it was away is dropped down to
+    /// the target, and the next couple of seconds of stutter don't grow the buffer.
+    pub fn restart(&mut self) {
+        self.primed = false;
+        self.grace_frames = GRACE_FRAMES;
+        self.avg_fill = self.target;
+        self.backlog_frames = 0;
+        self.backlog_min_fill = usize::MAX;
+        self.reset_window();
     }
 
     fn fill_frames(&self) -> usize {
@@ -193,8 +221,9 @@ impl DriftReader {
     fn on_underrun(&mut self) {
         self.primed = false;
         self.stats.underruns.fetch_add(1, Ordering::Relaxed);
-        // A source that stopped isn't a reason to add latency; a too-small buffer is.
-        if self.input_flowing() {
+        // A source that stopped isn't a reason to add latency; a too-small buffer is. Neither is
+        // an output device that's still settling in after a (re)start.
+        if self.input_flowing() && self.grace_frames == 0 {
             self.set_target(self.target * 1.5);
             self.floor = self.target;
         }
@@ -215,6 +244,28 @@ impl DriftReader {
             // Halve the spare room each step; the drift controller then drains it inaudibly.
             self.set_target((self.target - surplus / 2.0).max(self.floor));
         }
+    }
+
+    /// Drops a backlog: if the buffer never came within the margin of the target for half a
+    /// second, the surplus is audio that arrived while the output wasn't reading (or couldn't
+    /// keep up), and it would otherwise delay this channel for minutes.
+    fn check_backlog(&mut self, frames: u64) {
+        self.backlog_min_fill = self.backlog_min_fill.min(self.fill_frames());
+        self.backlog_frames += frames;
+        if self.backlog_frames < BACKLOG_WINDOW_FRAMES {
+            return;
+        }
+        let margin = ms_to_frames(BACKLOG_MARGIN_MS).max(self.target * 0.25);
+        if self.input_flowing() && self.backlog_min_fill as f64 > self.target + margin {
+            let surplus = self.backlog_min_fill - self.target as usize;
+            for _ in 0..surplus {
+                self.pop_frame();
+            }
+            self.avg_fill = self.fill_frames() as f64;
+            self.stats.skips.fetch_add(1, Ordering::Relaxed);
+        }
+        self.backlog_frames = 0;
+        self.backlog_min_fill = usize::MAX;
     }
 
     /// Fills `out` (interleaved, same channel count as the bridge). Outputs silence while
@@ -284,6 +335,8 @@ impl DriftReader {
         }
 
         self.frames_since_underrun += frames as u64;
+        self.grace_frames = self.grace_frames.saturating_sub(frames as u64);
+        self.check_backlog(frames as u64);
         self.window_min_fill = self.window_min_fill.min(self.fill_frames());
         self.window_frames += frames as u64;
         if self.window_frames >= SHRINK_EVERY_FRAMES {
@@ -324,6 +377,7 @@ mod tests {
     #[test]
     fn underrun_outputs_silence_and_grows_buffer() {
         let (mut tx, mut rx) = bridge(1, 20.0);
+        rx.grace_frames = 0; // well after start-up
         for _ in 0..1_000 {
             tx.push(0.7).unwrap();
         }
@@ -334,6 +388,76 @@ mod tests {
         assert!(out[1_200..].iter().all(|s| *s == 0.0), "stale samples left after underrun");
         assert_eq!(rx.stats.underruns.load(Ordering::Relaxed), 1);
         assert_eq!(rx.stats.target_frames.load(Ordering::Relaxed), 1_440);
+    }
+
+    #[test]
+    fn underruns_right_after_a_restart_dont_grow_the_buffer() {
+        let (mut tx, mut rx) = bridge(1, 20.0);
+        for _ in 0..1_000 {
+            tx.push(0.7).unwrap();
+        }
+        rx.stats.record_in(1_000);
+        let mut out = vec![0f32; 2_000];
+        rx.read(&mut out);
+        assert_eq!(rx.stats.underruns.load(Ordering::Relaxed), 1);
+        assert_eq!(rx.stats.target_frames.load(Ordering::Relaxed), 960, "a start-up stutter grew the buffer");
+    }
+
+    /// Steady 10 ms blocks on both sides for `blocks` blocks; returns the fill afterwards.
+    fn run_steady(tx: &mut Producer<f32>, rx: &mut DriftReader, blocks: usize) -> usize {
+        let mut out = vec![0f32; 480];
+        for _ in 0..blocks {
+            for _ in 0..480 {
+                let _ = tx.push(0.1);
+            }
+            rx.stats.record_in(480);
+            rx.read(&mut out);
+        }
+        rx.fill_frames()
+    }
+
+    #[test]
+    fn backlog_is_dropped_within_a_second() {
+        let (mut tx, mut rx) = bridge(1, 20.0);
+        run_steady(&mut tx, &mut rx, 300);
+        // 150 ms arrives that the output never asked for (it was away, e.g. reconnecting).
+        for _ in 0..7_200 {
+            tx.push(0.1).unwrap();
+        }
+        let fill = run_steady(&mut tx, &mut rx, 100);
+        let target = rx.stats.target_frames.load(Ordering::Relaxed) as usize;
+        assert!(fill <= target + 480, "fill {fill} frames, target {target}: backlog still there after 1 s");
+    }
+
+    #[test]
+    fn restart_drops_backlog_at_once() {
+        let (mut tx, mut rx) = bridge(1, 20.0);
+        run_steady(&mut tx, &mut rx, 300);
+        for _ in 0..7_200 {
+            tx.push(0.1).unwrap();
+        }
+        rx.restart();
+        let mut out = vec![0f32; 480];
+        rx.read(&mut out);
+        let target = rx.stats.target_frames.load(Ordering::Relaxed) as usize;
+        assert!(rx.fill_frames() <= target, "fill {} after restart, target {target}", rx.fill_frames());
+    }
+
+    #[test]
+    fn steady_bursty_input_is_not_trimmed() {
+        // 30 ms bursts in, 10 ms blocks out: the fill swings by a burst, which isn't a backlog.
+        let (mut tx, mut rx) = bridge(1, 40.0);
+        let mut out = vec![0f32; 480];
+        for block in 0..3_000 {
+            if block % 3 == 0 {
+                for _ in 0..1_440 {
+                    let _ = tx.push(0.1);
+                }
+                rx.stats.record_in(1_440);
+            }
+            rx.read(&mut out);
+        }
+        assert_eq!(rx.stats.skips.load(Ordering::Relaxed), 0, "normal bursts were mistaken for a backlog");
     }
 
     #[test]

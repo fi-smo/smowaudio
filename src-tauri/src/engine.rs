@@ -394,6 +394,12 @@ impl Engine {
                 crate::append_log(&format!("Output playing to {device_name}"));
                 last_output = device_name;
             }
+            // Whatever queued up while the output was away (a Bluetooth speaker reconnecting, a
+            // device switch) is dropped, so the channels don't start out behind.
+            for reader in readers.iter_mut().flatten() {
+                reader.restart();
+            }
+            monitor.restart();
             let keep_going =
                 || !stop.load(Ordering::Relaxed) && shared.output_generation.load(Ordering::Relaxed) == generation;
             stream::run_render_while(&device, 2, keep_going, Some(&shared.output_starved), |out| {
@@ -572,6 +578,8 @@ impl Engine {
             }
             stream::phase("find device");
             let device = device::by_id(&sink)?;
+            // The mic kept arriving while nobody listened: start from now, not from then.
+            reader.restart();
             let keep_going = || !stop.load(Ordering::Relaxed) && listened.load(Ordering::Relaxed);
             stream::run_render_while(&device, 2, keep_going, Some(&mic_shared.mic_starved), |out| {
                 let frames = out.len() / 2;

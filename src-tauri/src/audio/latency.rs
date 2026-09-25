@@ -205,17 +205,21 @@ mod tests {
         assert!(beep_onsets(&vec![0f32; 24_000]).is_empty());
     }
 
-    /// Real measurement through this PC's cables and the running Smowaudio.
+    /// Real measurement through this PC's cables and the running Smowaudio, every channel.
     #[test]
-    #[ignore = "plays beeps through the real Game channel; Smowaudio must be running"]
-    fn measures_game_channel() {
+    #[ignore = "plays beeps through the real channels; Smowaudio must be running"]
+    fn measures_every_channel() {
         let _com = ComGuard::new();
         let config = crate::config::Config::load();
-        let game = &config.channels[0];
         let output = device::resolve_physical(device::Flow::Render, config.output_device.as_deref(), config.previous_default(device::Flow::Render).as_deref())
             .and_then(|d| device::device_id(&d))
             .expect("an output device");
-        let d = measure(game.sink.as_deref().unwrap(), game.source.as_deref().unwrap(), &output).expect("measured");
-        println!("Game: VB-Cable {:.1} ms + Smowaudio/Windows {:.1} ms = {:.1} ms", d.cable_ms, d.engine_ms, d.cable_ms + d.engine_ms);
+        for (name, ch) in crate::config::CHANNEL_NAMES.iter().zip(&config.channels) {
+            let (Some(sink), Some(source)) = (ch.sink.as_deref(), ch.source.as_deref()) else { continue };
+            match measure(sink, source, &output) {
+                Ok(d) => println!("{name}: VB-Cable {:.1} ms + Smowaudio/Windows {:.1} ms = {:.1} ms", d.cable_ms, d.engine_ms, d.cable_ms + d.engine_ms),
+                Err(e) => println!("{name}: {e:#}"),
+            }
+        }
     }
 }
