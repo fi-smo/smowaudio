@@ -344,7 +344,9 @@ fn apply_windows_defaults(config: &mut Config) -> bool {
     let targets = config.windows_default_targets();
     let mut config_changed = false;
     if config.previous_defaults.is_none() {
-        config.previous_defaults = Some(WindowsDefaults::read());
+        // Only the user's own devices: if the cables are already the defaults, there's nothing
+        // of theirs to remember.
+        config.previous_defaults = Some(WindowsDefaults::read().without_virtual());
         config_changed = true;
     }
     match targets.apply() {
@@ -367,9 +369,23 @@ fn set_windows_defaults_enabled(state: &AppState, enabled: bool) -> CmdResult<()
         config.set_windows_defaults = enabled;
         if enabled {
             apply_windows_defaults(&mut config);
-        } else if let Some(previous) = config.previous_defaults.take() {
-            previous.apply().map_err(err)?;
-            append_log("restored the Windows default devices from before Smowaudio");
+        } else {
+            // The user's own defaults from before, or else the devices Smowaudio plays to and
+            // records from, so Windows never stays on a cable.
+            let previous = config.previous_defaults.take().unwrap_or_default().without_virtual();
+            let physical = |flow: Flow, id: &Option<String>| {
+                device::resolve_physical(flow, id.as_deref(), None).ok().and_then(|d| device::device_id(&d).ok())
+            };
+            let output = physical(Flow::Render, &config.output_device);
+            let mic = physical(Flow::Capture, &config.mic_device);
+            let restore = WindowsDefaults {
+                playback: previous.playback.or_else(|| output.clone()),
+                playback_communications: previous.playback_communications.or(output),
+                recording: previous.recording.or_else(|| mic.clone()),
+                recording_communications: previous.recording_communications.or(mic),
+            };
+            restore.apply().map_err(err)?;
+            append_log(&format!("restored Windows default devices: {restore:?}"));
         }
     }
     state.dirty.store(true, Ordering::Relaxed);
@@ -691,6 +707,15 @@ fn main() {
     let config = {
         let _com = audio::ComGuard::new();
         let mut config = Config::load();
+        // Older versions could remember a cable as the user's "own" default; forget those.
+        if let Some(previous) = config.previous_defaults.clone() {
+            let cleaned = previous.clone().without_virtual();
+            if cleaned != previous {
+                append_log(&format!("forgot virtual devices remembered as your own Windows defaults: {previous:?}"));
+                config.previous_defaults = Some(cleaned);
+                let _ = config.save();
+            }
+        }
         if !duplicate {
             append_log(&format!("started pid {} with {}", std::process::id(), config.describe()));
             if config.set_windows_defaults && apply_windows_defaults(&mut config) {

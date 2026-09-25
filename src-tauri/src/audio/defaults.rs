@@ -92,6 +92,24 @@ impl WindowsDefaults {
         }
     }
 
+    /// Drops every slot that points at a virtual device (a cable, another mixer's device).
+    /// "Restoring" one of those would just leave a cable as the Windows default.
+    pub fn without_virtual(mut self) -> Self {
+        let virtual_ids: Vec<String> = [device::Flow::Render, device::Flow::Capture]
+            .into_iter()
+            .filter_map(|flow| device::list(flow).ok())
+            .flatten()
+            .filter(|d| d.is_virtual())
+            .map(|d| d.id)
+            .collect();
+        for slot in [&mut self.playback, &mut self.playback_communications, &mut self.recording, &mut self.recording_communications] {
+            if slot.as_ref().is_some_and(|id| virtual_ids.contains(id)) {
+                *slot = None;
+            }
+        }
+        self
+    }
+
     /// Sets every device in `self` that differs from the current default. Returns how many
     /// defaults were changed.
     pub fn apply(&self) -> Result<usize> {
