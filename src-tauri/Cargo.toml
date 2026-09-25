@@ -1,6 +1,6 @@
 [package]
 name = "smowaudio"
-version = "0.5.2"
+version = "0.6.0"
 edition = "2021"
 description = "Lightweight audio mixer with virtual mic processing"
 
