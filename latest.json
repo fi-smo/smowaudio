@@ -1,11 +1,11 @@
 {
-  "version": "0.5.0",
-  "notes": "**Full Changelog**: https://github.com/fi-smo/smowaudio/compare/v0.4.1...v0.5.0",
-  "pub_date": "2026-09-25T05:02:32Z",
+  "version": "0.5.1",
+  "notes": "**Full Changelog**: https://github.com/fi-smo/smowaudio/compare/v0.5.0...v0.5.1",
+  "pub_date": "2026-09-25T06:02:14Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSanBTN1QxSDRya1FWZmpadDlXNktvSjlqK0MrdVBWSm52N3ZReklMTCt6ZXNKL3hNVnpMYmR3SzNhYkl3OXl4dW1PK05PeWwxT0s2bEF3ak1keUMweE9wSGlzRksvMWdnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMzEyNTQ4CWZpbGU6U21vd2F1ZGlvXzAuNS4wX3g2NC1zZXR1cC5leGUKaW44TXNVQ0xpTDE5NmpoRmJWRkVKUm1WbTFDOUVXemVaN214eUVpVFcvbGh1K1k1cnVadURRekNhOU82d3pBMWdsTEZxclJnRHZYZ2trVS9qcC9YQUE9PQo=",
-      "url": "https://api.github.com/repos/fi-smo/smowaudio/releases/assets/587570578"
+      "url": "https://api.github.com/repos/fi-smo/smowaudio/releases/assets/587661570",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSanBTN1QxSDRya1JkemVoZjk4WkRIYXZXbnBEaWNVNmh1RXpqNksrTU1Jc0tSRDNBRVNCRGwraHd6THVXY1FFN044RytGVHB2cU1WeFNmNVFtMUh6RTVmajl0YlkrZ3dBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwMzE2MTI4CWZpbGU6U21vd2F1ZGlvXzAuNS4xX3g2NC1zZXR1cC5leGUKNGEyNE1hQXA1bVBURCtPS0FhM3h6WlBxOEdNV0RyZnE4aFlHdTJKR0xYakt2T2pqSFFzV085VVVPdVVTdjRyVzFrQ0xFc1FnN09vVENnSTU2anRrQWc9PQo="
     }
   }
 }
