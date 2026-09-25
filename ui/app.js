@@ -1124,6 +1124,19 @@ function card(head, ...children) {
 }
 
 /** The one row layout every setting uses: label and help on the left, the control on the right. */
+/** A switch for an on/off setting the backend stores as is ("master_per_output", "auto_update"). */
+function preferenceSwitch(name, label, after) {
+  const sw = switchEl("", !!snap.config[name], async (on) => {
+    try {
+      await invoke("set_preference", { name, enabled: on });
+      snap.config[name] = on;
+      after?.();
+    } catch (e) { showError(e); sw.input.checked = !on; }
+  });
+  sw.input.setAttribute("aria-label", label);
+  return sw.el;
+}
+
 function settingRow({ label, help, control, compact = false, fit = false, key }) {
   const helpEl = h("p", { class: "srow-help" }, help ?? "");
   helpEl.hidden = !help;
@@ -1300,6 +1313,9 @@ function devicesTab() {
     card({ title: "Playback and recording" },
       deviceRow({ key: "output", label: "Headphones / speakers", list: physical(snap.render_devices), empty: "Automatic (your usual default)",
         help: () => "Where every channel is mixed down to." }),
+      settingRow({ label: "Separate master for each device", fit: true,
+        help: "Each pair of headphones or speakers keeps its own master volume and EQ, and gets them back when it plays again.",
+        control: preferenceSwitch("master_per_output", "Separate master for each device") }).row,
       deviceRow({ key: "mic", label: "Microphone", list: physical(snap.capture_devices), empty: "Automatic (your usual default)",
         help: () => deviceMissing(snap.status.Microphone)
           ? { text: "No microphone found. Connect one, or pick a specific device.", bad: true }
@@ -1437,6 +1453,9 @@ function updatesTab() {
     h("div", { class: "srow fit" },
       h("div", { class: "srow-text" }, h("div", { class: "version num", id: "update-version" }), h("p", { class: "srow-help", id: "update-state" })),
       h("div", { class: "srow-control" }, install, check)),
+    settingRow({ label: "Install updates automatically", fit: true,
+      help: "Only while the window is closed and nothing is playing: right after Smowaudio starts, or once it's been quiet for 2 minutes. It comes back in the tray.",
+      control: preferenceSwitch("auto_update", "Install updates automatically", renderUpdates) }).row,
     h("div", { class: "update-extra", id: "update-extra", hidden: true },
       h("div", { class: "update-progress", id: "update-progress", hidden: true }, h("i"))));
   const whatsNew = h("section", { class: "card", id: "whats-new", hidden: true },
@@ -1541,7 +1560,8 @@ function renderUpdates() {
   const state = $("#update-state");
   if (!state) return;
   $("#update-version").textContent = `Version ${st.current}`;
-  const [text, cls] = st.available ? [`Version ${st.available} is available`, "ok"]
+  const auto = snap?.config.auto_update ? " · installs itself once this window is closed and nothing is playing" : "";
+  const [text, cls] = st.available ? [`Version ${st.available} is available${auto}`, "ok"]
     : st.error ? [st.error, "bad"]
     : st.checked ? [`You're up to date${st.checked_at ? ` · checked ${ago(st.checked_at)}` : ""}`, "ok"]
     : ["Not checked yet", ""];

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::audio::defaults::WindowsDefaults;
 use crate::audio::device::{self, DeviceInfo, Flow};
-use crate::dsp::chain::{ChannelSettings, MicSettings};
+use crate::dsp::chain::{ChannelSettings, EqSettings, MicSettings};
 
 /// Same channels as SteelSeries Sonar. Game is meant to be the Windows default output, so it
 /// also carries system sounds and anything not assigned elsewhere.
@@ -65,6 +65,21 @@ pub struct Config {
     pub hotkeys: BTreeMap<String, String>,
     /// How much the volume up/down shortcuts change a channel (0.05 = 5 %).
     pub volume_step: f32,
+    /// Give each output device its own master volume and EQ, restored when it plays again.
+    pub master_per_output: bool,
+    /// The master volume and EQ each output device last played with, by device id.
+    pub output_masters: BTreeMap<String, OutputMaster>,
+    /// Install updates without asking: right after start, or once nothing has played for a while.
+    pub auto_update: bool,
+}
+
+/// What an output device remembers. Mute stays shared: it shouldn't come back on its own
+/// when the device changes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct OutputMaster {
+    pub volume: f32,
+    pub eq: EqSettings,
 }
 
 impl Default for Config {
@@ -84,6 +99,9 @@ impl Default for Config {
             previous_defaults: None,
             hotkeys: BTreeMap::new(),
             volume_step: 0.05,
+            master_per_output: true,
+            output_masters: BTreeMap::new(),
+            auto_update: true,
         }
     }
 }
@@ -104,10 +122,23 @@ impl Config {
     }
 
     pub fn load() -> Self {
-        let mut config: Config = std::fs::read_to_string(Self::path())
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default();
+        let path = Self::path();
+        let mut config: Config = match std::fs::read_to_string(&path) {
+            Ok(text) => match serde_json::from_str(&text) {
+                Ok(config) => config,
+                Err(e) => {
+                    // Starting over would save defaults over it; keep the file for recovery.
+                    let kept = Self::set_aside(&path);
+                    crate::append_log(&format!(
+                        "config: couldn't read {} ({e}); starting with defaults, the old file is kept as {}",
+                        path.display(),
+                        kept.map_or_else(|| "nothing (moving it failed)".into(), |p| p.display().to_string())
+                    ));
+                    Config::default()
+                }
+            },
+            Err(_) => Config::default(),
+        };
         let migrated = config.layout < LAYOUT;
         if migrated {
             config.migrate_to_sonar_layout();
@@ -121,6 +152,13 @@ impl Config {
             }
         }
         config
+    }
+
+    /// Renames an unreadable config to config.unreadable-<unix time>.json next to it.
+    fn set_aside(path: &std::path::Path) -> Option<PathBuf> {
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let kept = path.with_file_name(format!("config.unreadable-{secs}.json"));
+        std::fs::rename(path, &kept).ok().map(|_| kept)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -342,5 +380,23 @@ mod tests {
         let old: Config = serde_json::from_str(r#"{"channels": []}"#).unwrap();
         assert_eq!(old.layout, 0, "files without a layout field are old");
         assert_eq!(Config::default().layout, LAYOUT, "fresh configs start on the current layout");
+    }
+
+    #[test]
+    fn unreadable_config_is_set_aside_not_overwritten() {
+        let dir = std::env::temp_dir().join(format!("smowaudio-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, "{ not json").unwrap();
+        let kept = Config::set_aside(&path).expect("moved");
+        assert!(!path.exists(), "the unreadable file is out of the way");
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), "{ not json", "and kept as it was");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn older_configs_get_the_new_settings_switched_on() {
+        let old: Config = serde_json::from_str(r#"{"layout": 2, "channels": []}"#).unwrap();
+        assert!(old.master_per_output && old.auto_update && old.output_masters.is_empty());
     }
 }

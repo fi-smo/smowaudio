@@ -10,7 +10,15 @@ A lightweight replacement for SteelSeries Sonar / Elgato Wave Link / Voicemeeter
 - **Keyboard shortcuts:** bind almost everything in Settings (volumes, mutes, every mic filter, push to talk,
   output device). Nothing is bound by default. A small overlay in the top-right corner confirms each change.
 - **Mic test:** record 5 seconds in the Mic tab and play it back filtered or untouched.
+- **A master for each device:** headphones and speakers each keep their own master volume and EQ.
+- **Updates:** installed automatically while nothing is playing (or with one click), with a changelog in Settings.
 - **Starts fast:** the audio engine starts before the UI. Launched at sign-in, it sits in the tray and the WebView window is only created when you open it.
+
+## Planned
+
+- **Ducking:** turn Game and Media down while someone talks on Chat, and back up afterwards.
+- **Per-app volume and mute** on the Apps cards, like the Windows volume mixer.
+- **ChatMix:** one slider (and shortcut) that balances Game against Chat, like the dial on SteelSeries headsets.
 
 ## One-time setup
 

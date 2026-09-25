@@ -117,6 +117,28 @@ impl<T: Clone> Slot<T> {
     }
 }
 
+/// Told the id of the device the output opens, each time it (re)opens.
+static ON_OUTPUT_OPENED: std::sync::OnceLock<Box<dyn Fn(String) + Send + Sync>> = std::sync::OnceLock::new();
+/// The device the output last opened: the engine starts before the UI sets the handler.
+static LAST_OUTPUT_OPENED: Mutex<Option<String>> = Mutex::new(None);
+
+/// Sets the handler for [`ON_OUTPUT_OPENED`] (once, at startup) and tells it the device already
+/// playing. It runs on the output thread, so it must hand real work off rather than wait on the
+/// engine.
+pub fn on_output_opened(f: impl Fn(String) + Send + Sync + 'static) {
+    let _ = ON_OUTPUT_OPENED.set(Box::new(f));
+    if let (Some(report), Some(id)) = (ON_OUTPUT_OPENED.get(), LAST_OUTPUT_OPENED.lock().clone()) {
+        report(id);
+    }
+}
+
+fn output_opened(id: String) {
+    *LAST_OUTPUT_OPENED.lock() = Some(id.clone());
+    if let Some(report) = ON_OUTPUT_OPENED.get() {
+        report(id);
+    }
+}
+
 pub struct Shared {
     mic: Slot<MicSettings>,
     channels: [Slot<ChannelSettings>; CHANNEL_COUNT],
@@ -393,6 +415,9 @@ impl Engine {
             if device_name != last_output {
                 crate::append_log(&format!("Output playing to {device_name}"));
                 last_output = device_name;
+            }
+            if let Ok(id) = device::device_id(&device) {
+                output_opened(id);
             }
             // Whatever queued up while the output was away (a Bluetooth speaker reconnecting, a
             // device switch) is dropped, so the channels don't start out behind.

@@ -44,6 +44,8 @@ struct AppState {
     updates: updates::Updates,
     /// Height the flyout's content last asked for, in CSS pixels.
     flyout_height: Mutex<Option<f64>>,
+    /// The device the output is playing to right now, as the engine reported it.
+    playing_output: Mutex<Option<String>>,
 }
 
 impl AppState {
@@ -63,7 +65,13 @@ impl AppState {
     }
 
     fn set_master_settings(&self, settings: ChannelSettings) {
-        self.update(|c| c.master = settings.clone());
+        let playing = self.playing_output.lock().clone();
+        self.update(|c| {
+            c.master = settings.clone();
+            if let (true, Some(id)) = (c.master_per_output, playing) {
+                c.output_masters.insert(id, config::OutputMaster { volume: settings.volume, eq: settings.eq.clone() });
+            }
+        });
         if let Some(e) = self.engine.lock().as_ref() {
             e.set_master(settings);
         }
@@ -84,6 +92,36 @@ impl AppState {
         }
         // Not a device change: keep the watcher from restarting every stream over it.
         *self.device_fingerprint.lock() = config.device_fingerprint();
+    }
+
+    /// The output now plays to `id`: bring back the master volume and EQ it last had (or remember
+    /// the current ones for it). Returns true when the master changed.
+    fn output_opened(&self, id: String) -> bool {
+        {
+            let mut playing = self.playing_output.lock();
+            if playing.as_deref() == Some(id.as_str()) {
+                return false;
+            }
+            *playing = Some(id.clone());
+        }
+        let config = self.config.lock().clone();
+        if !config.master_per_output {
+            return false;
+        }
+        match config.output_masters.get(&id) {
+            Some(saved) if saved.volume != config.master.volume || saved.eq != config.master.eq => {
+                self.set_master_settings(ChannelSettings { volume: saved.volume, eq: saved.eq.clone(), muted: config.master.muted });
+                true
+            }
+            Some(_) => false,
+            None => {
+                self.update(|c| {
+                    let remembered = config::OutputMaster { volume: c.master.volume, eq: c.master.eq.clone() };
+                    c.output_masters.insert(id, remembered);
+                });
+                false
+            }
+        }
     }
 
     fn restart_engine(&self) {
@@ -287,6 +325,33 @@ fn get_meters(state: State<AppState>) -> Meters {
 /// doesn't get redrawn under the cursor.
 fn notify_config_changed(app: &AppHandle, source: &str) {
     let _ = app.emit("config-changed", serde_json::json!({ "source": source }));
+}
+
+/// On/off settings without side effects beyond the config: "master_per_output", "auto_update".
+#[tauri::command]
+fn set_preference(app: AppHandle, webview: WebviewWindow, name: String, enabled: bool) -> CmdResult<()> {
+    let state = app.state::<AppState>();
+    match name.as_str() {
+        "master_per_output" => {
+            let playing = state.playing_output.lock().clone();
+            state.update(|c| {
+                c.master_per_output = enabled;
+                // Start from what's playing now, so turning it on changes nothing audible.
+                if let (true, Some(id)) = (enabled, playing) {
+                    c.output_masters.insert(id, config::OutputMaster { volume: c.master.volume, eq: c.master.eq.clone() });
+                }
+            });
+        }
+        "auto_update" => {
+            state.update(|c| c.auto_update = enabled);
+            if enabled {
+                updates::install_when_idle(&app);
+            }
+        }
+        _ => return Err(format!("unknown setting {name}")),
+    }
+    notify_config_changed(&app, webview.label());
+    Ok(())
 }
 
 #[tauri::command]
@@ -737,17 +802,33 @@ fn place_flyout(window: &WebviewWindow, click: PhysicalPosition<f64>) {
 
 /// Appends a timestamped line to %APPDATA%\Smowaudio\smowaudio.log. The release build has
 /// no console, so this is where stream errors and panics leave a trace.
+/// The log is kept to about this size: past it, it becomes smowaudio.old.log (replacing the
+/// previous one) and a new file starts, so there's always recent history and never much more.
+const LOG_LIMIT_BYTES: u64 = 1024 * 1024;
+
 pub(crate) fn append_log(message: &str) {
     use std::io::Write;
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let Some(dir) = std::env::var_os("APPDATA").map(|d| std::path::PathBuf::from(d).join("Smowaudio")) else {
         return;
     };
     let _ = std::fs::create_dir_all(&dir);
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("smowaudio.log")) {
-        // One write per line so lines from different threads don't interleave.
-        let _ = file.write_all(format!("[unix {secs}] {message}\n").as_bytes());
+    let path = dir.join("smowaudio.log");
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > LOG_LIMIT_BYTES) {
+        let _ = std::fs::rename(&path, dir.join("smowaudio.old.log"));
     }
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        // One write per line so lines from different threads don't interleave.
+        let _ = file.write_all(format!("[{}] {message}\n", local_timestamp()).as_bytes());
+    }
+}
+
+/// Local time like "2026-09-25 18:40:31.207", as the clock in the taskbar shows it.
+fn local_timestamp() -> String {
+    let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+        t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, t.wMilliseconds
+    )
 }
 
 /// Logs panics from any thread (an audio stream, say) before the default handler runs.
@@ -800,6 +881,7 @@ fn main() {
         device_fingerprint: Mutex::new(String::new()),
         updates: updates::Updates::default(),
         flyout_height: Mutex::new(None),
+        playing_output: Mutex::new(None),
     };
 
     let app = tauri::Builder::default()
@@ -819,6 +901,7 @@ fn main() {
             mic_test,
             update_status,
             changelog,
+            set_preference,
             restart_audio,
             measure_delay,
             clear_hotkeys,
@@ -885,6 +968,18 @@ fn main() {
                     }
                 });
             }
+
+            // Each output device keeps its own master volume and EQ.
+            let output_handle = app.handle().clone();
+            engine::on_output_opened(move |id| {
+                let handle = output_handle.clone();
+                std::thread::spawn(move || {
+                    if handle.state::<AppState>().output_opened(id) {
+                        append_log("master volume and EQ switched to the output device's own");
+                        notify_config_changed(&handle, "output");
+                    }
+                });
+            });
 
             // Restart streams when the devices they depend on change (headset plugged in, mic
             // turned on, Windows default changed while following it).
