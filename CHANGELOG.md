@@ -3,6 +3,9 @@
 Every release needs a section here: the release build takes its notes from it, and the app shows
 them under Settings → Updates.
 
+## 0.8.1 — 2026-09-25
+- The tray flyout's level meters are exactly as wide as the sliders above them
+
 ## 0.8.0 — 2026-09-25
 - Settings → Updates shows what changed in every version, and what's new in an available update
 - The tray flyout's Open mixer button is dark instead of white
