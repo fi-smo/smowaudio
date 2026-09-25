@@ -159,6 +159,64 @@ fn get_state_now(state: &AppState) -> CmdResult<Snapshot> {
     })
 }
 
+#[derive(Serialize)]
+struct DelayResult {
+    /// Channel index (see config::CHANNEL_NAMES).
+    channel: usize,
+    cable_ms: Option<f64>,
+    engine_ms: Option<f64>,
+    error: Option<String>,
+}
+
+/// Measures each channel's delay from an app to the output device (see audio::latency), one
+/// channel after another. Emits "delay-progress" with the channel index before each.
+#[tauri::command]
+async fn measure_delay(app: AppHandle) -> CmdResult<Vec<DelayResult>> {
+    let handle = app.clone();
+    background(app, move |state| {
+        let config = state.config.lock().clone();
+        let running = state.engine.lock().as_ref().map(|e| e.shared.status.lock().get("Output").cloned());
+        if running.flatten().as_deref() != Some("running") {
+            return Err("Audio output isn't running, so there's nothing to measure. Check the stream status above.".to_string());
+        }
+        let output = device::resolve_physical(Flow::Render, config.output_device.as_deref(), config.previous_default(Flow::Render).as_deref())
+            .and_then(|d| device::device_id(&d))
+            .map_err(|e| format!("No output device: {e}"))?;
+        let master_silent = config.master.muted || config.master.volume <= 0.0;
+        let mut results = Vec::new();
+        for (i, channel) in config.channels.iter().enumerate() {
+            let (Some(sink), Some(source)) = (channel.sink.as_deref(), channel.source.as_deref()) else { continue };
+            let blocked = if master_silent {
+                Some("Master is muted or at 0, so nothing reaches your output.")
+            } else if channel.settings.muted || channel.settings.volume <= 0.0 {
+                Some("This channel is muted or at 0. Unmute it to measure.")
+            } else {
+                None
+            };
+            let result = match blocked {
+                Some(reason) => DelayResult { channel: i, cable_ms: None, engine_ms: None, error: Some(reason.into()) },
+                None => {
+                    let _ = handle.emit("delay-progress", i);
+                    match audio::latency::measure(sink, source, &output) {
+                        Ok(d) => DelayResult { channel: i, cable_ms: Some(d.cable_ms), engine_ms: Some(d.engine_ms), error: None },
+                        Err(e) => DelayResult { channel: i, cable_ms: None, engine_ms: None, error: Some(format!("{e:#}")) },
+                    }
+                }
+            };
+            append_log(&format!(
+                "delay {}: cable {:?} ms, smowaudio+windows {:?} ms{}",
+                config::CHANNEL_NAMES[i],
+                result.cable_ms.map(|v| v.round()),
+                result.engine_ms.map(|v| v.round()),
+                result.error.as_deref().map(|e| format!(" ({e})")).unwrap_or_default()
+            ));
+            results.push(result);
+        }
+        Ok(results)
+    })
+    .await
+}
+
 /// Restarts every audio stream ("Retry" in Settings when a stream has stopped).
 #[tauri::command]
 async fn restart_audio(app: AppHandle) {
@@ -755,6 +813,7 @@ fn main() {
             mic_test,
             update_status,
             restart_audio,
+            measure_delay,
             clear_hotkeys,
             open_log_folder,
             check_for_update,

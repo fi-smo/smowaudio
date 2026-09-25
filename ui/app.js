@@ -453,7 +453,7 @@ function renderMixer() {
 
   root.replaceChildren(
     viewHead("Mixer", "System sounds and apps you haven't placed play in Game.",
-      h("div", { class: "chips" }, pill("Buffer", h("b", { class: "num", id: "chip-buffer" }, "–")))),
+      h("div", { class: "chips" }, bufferPill())),
     h("div", { class: "mixer-groups" },
       h("section", { class: "mixer-group", "aria-label": "Playback" },
         h("div", { class: "group-label" }, h("span", {}, "Playback"), h("small", {}, "Game, Chat, Media and Aux mix into Master, then your headphones")),
@@ -480,6 +480,18 @@ function fitMixer() {
   if (overflow > 0) root.style.setProperty("--fader-h", `${Math.max(FADER_MIN, FADER_MAX - overflow)}px`);
 }
 window.addEventListener("resize", () => fitMixer());
+
+/** Smowaudio's own buffer; clicking it opens the full delay measurement in Settings. */
+function bufferPill() {
+  const b = h("button", { type: "button", class: "pill", title: "Smowaudio's own buffer. Click to measure the full delay." },
+    "Buffer ", h("b", { class: "num", id: "chip-buffer" }, "–"));
+  b.addEventListener("click", () => {
+    setSettingsTab("devices");
+    setView("settings");
+    $("#delay-card")?.scrollIntoView({ block: "start" });
+  });
+  return b;
+}
 
 const micVolume = (mic) => clamp(Math.pow(10, mic.gain_db / 20), 0, MAX_VOLUME);
 
@@ -1098,6 +1110,7 @@ function renderSettings() {
     tabs,
     h("div", { class: "settings-body", id: "settings-panel", role: "tabpanel", "aria-labelledby": `tab-${settingsTab}` }, ...content));
   if (settingsTab === "shortcuts") renderShortcuts();
+  if (settingsTab === "devices") renderDelay();
   renderStatus();
   refreshUpdates();
 }
@@ -1295,8 +1308,78 @@ function devicesTab() {
       deviceRow({ key: "mic_sink", label: cableLabelEl("Virtual mic", "var(--mic)"), list: cables(snap.render_devices), empty: "None", compact: true,
         help: () => { const side = pairedSide(snap.render_devices, snap.config.mic_sink); return side ? ["Apps pick ", code(side), " as their mic"] : "No cable: apps have no Virtual Mic"; } }),
       ...CHANNELS.map((c, i) => deviceRow({ key: `source${i}`, label: cableLabelEl(c.name, c.color), list: cables(snap.capture_devices), empty: "None", compact: true, help: channelHelp(i) }))),
+    delayCard(),
   ];
 }
+
+// ---------- settings: delay ----------
+// Results survive re-renders and tab switches until the app window closes.
+let delayResults = null; // [{ channel, cable_ms, engine_ms, error }]
+let delayMeasuredAt = null;
+let delayRunning = null; // channel index being measured, or -1 while starting
+
+function delayCard() {
+  const button = h("button", { type: "button", class: "btn primary", id: "delay-measure" }, "Measure");
+  button.addEventListener("click", measureDelay);
+  return h("section", { class: "card delay", id: "delay-card" },
+    h("div", { class: "card-head row" },
+      h("div", {}, h("h3", {}, "Delay"),
+        h("p", {}, "How long sound takes from an app to your output device, through VB-Cable and Smowaudio. Measuring plays three short, quiet beeps on each channel.")),
+      button),
+    h("div", { id: "delay-body" }),
+    h("p", { class: "delay-note" }, "Your headphones or speakers add their own delay after this, which Windows can't measure: Bluetooth usually 100–250 ms, wired headphones and USB about 1–10 ms."));
+}
+
+function renderDelay() {
+  const body = $("#delay-body");
+  const button = $("#delay-measure");
+  if (!body || !button) return;
+  const running = delayRunning !== null;
+  button.disabled = running;
+  button.textContent = running ? (delayRunning >= 0 ? `Measuring ${CHANNELS[delayRunning].name}…` : "Starting…") : delayResults ? "Measure again" : "Measure";
+  if (!delayResults) {
+    body.replaceChildren(h("div", { class: "delay-empty" }, running ? "Listening for the beeps…" : "Not measured yet."));
+    return;
+  }
+  const ok = delayResults.filter((r) => r.error === null);
+  const longest = Math.max(1, ...ok.map((r) => r.cable_ms + r.engine_ms));
+  const ms = (v) => `${Math.round(v)} ms`;
+  body.replaceChildren(
+    h("div", { class: "delay-legend" },
+      h("span", {}, h("i", { class: "k cable" }), "VB-Cable"),
+      h("span", {}, h("i", { class: "k engine" }), "Smowaudio + Windows"),
+      h("span", { class: "spacer" }),
+      delayMeasuredAt ? h("span", { class: "when" }, `measured ${ago(delayMeasuredAt)}`) : null),
+    ...delayResults.map((r) => {
+      const c = CHANNELS[r.channel];
+      if (r.error !== null) {
+        return h("div", { class: "delay-row" }, cableLabelEl(c.name, c.color), h("span", { class: "delay-error" }, r.error));
+      }
+      const total = r.cable_ms + r.engine_ms;
+      return h("div", { class: "delay-row", title: `VB-Cable ${ms(r.cable_ms)} + Smowaudio and Windows ${ms(r.engine_ms)}` },
+        cableLabelEl(c.name, c.color),
+        h("span", { class: "delay-bar", "aria-hidden": "true" },
+          h("i", { class: "cable", style: `width:${(r.cable_ms / longest) * 100}%` }),
+          h("i", { class: "engine", style: `width:${(r.engine_ms / longest) * 100}%` })),
+        h("span", { class: "delay-parts num" }, `${ms(r.cable_ms)} + ${ms(r.engine_ms)}`),
+        h("b", { class: "delay-total num" }, ms(total)));
+    }));
+}
+
+async function measureDelay() {
+  delayRunning = -1;
+  renderDelay();
+  try {
+    delayResults = await invoke("measure_delay");
+    delayMeasuredAt = Date.now();
+    if (!delayResults.length) toast("No channel has a cable to measure. Pick cables above.", true);
+  } catch (e) {
+    showError(e);
+  }
+  delayRunning = null;
+  renderDelay();
+}
+listen("delay-progress", (e) => { if (delayRunning !== null) { delayRunning = e.payload; renderDelay(); } });
 
 const cableLabelEl = (name, color) => h("span", { class: "tape small", style: `--c:${color}` }, name);
 

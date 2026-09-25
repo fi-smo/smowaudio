@@ -2,6 +2,7 @@
 //! and per-app routing.
 
 pub mod defaults;
+pub mod latency;
 pub mod device;
 pub mod notify;
 pub mod resample;

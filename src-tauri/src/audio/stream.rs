@@ -9,7 +9,8 @@ use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Media::Audio::{
     IAudioCaptureClient, IAudioClient, IAudioClient3, IAudioRenderClient, IMMDevice,
     AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
-    AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+    AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
+    AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
     WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
 };
 use windows::Win32::System::Com::{CoTaskMemFree, CLSCTX_ALL};
@@ -84,6 +85,11 @@ impl Drop for Opened {
 }
 
 fn open(device: &IMMDevice, channels: u16, buffer_hns: i64) -> Result<Opened> {
+    open_with(device, channels, buffer_hns, 0)
+}
+
+/// `open` with extra stream flags (e.g. loopback, to record what a render device plays).
+fn open_with(device: &IMMDevice, channels: u16, buffer_hns: i64, extra_flags: u32) -> Result<Opened> {
     unsafe {
         phase("activate");
         let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
@@ -102,7 +108,8 @@ fn open(device: &IMMDevice, channels: u16, buffer_hns: i64) -> Result<Opened> {
             AUDCLNT_SHAREMODE_SHARED,
             AUDCLNT_STREAMFLAGS_EVENTCALLBACK
                 | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
-                | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
+                | extra_flags,
             buffer_hns,
             0,
             &format,
@@ -282,6 +289,98 @@ mod tests {
 }
 
 /// Test-only tools for measuring real latency through audio devices using QPC timestamps.
+/// A recording with the time each packet was captured: mono samples (left and right averaged)
+/// and, per packet, (index of its first sample, QPC time of that sample in 100 ns units).
+pub struct TimedRecording {
+    pub samples: Vec<f32>,
+    pub packets: Vec<(usize, f64)>,
+}
+
+impl TimedRecording {
+    /// QPC time (100 ns units) of sample `i`.
+    pub fn time_of(&self, i: usize) -> f64 {
+        let k = self.packets.partition_point(|(start, _)| *start <= i).saturating_sub(1);
+        self.packets.get(k).map_or(0.0, |(start, qpc)| qpc + (i as f64 - *start as f64) / SAMPLE_RATE as f64 * 1e7)
+    }
+}
+
+/// Records a capture device, or with `loopback` what a render device is playing, until `stop`.
+/// Packets carry capture timestamps, so two recordings can be compared exactly.
+pub fn record_timed(device: &IMMDevice, loopback: bool, stop: &AtomicBool) -> Result<TimedRecording> {
+    let flags = if loopback { AUDCLNT_STREAMFLAGS_LOOPBACK } else { 0 };
+    let s = open_with(device, 2, CAPTURE_BUFFER_HNS, flags)?;
+    let capture: IAudioCaptureClient = unsafe { s.client.GetService()? };
+    unsafe { s.client.Start()? };
+    let mut rec = TimedRecording { samples: Vec::new(), packets: Vec::new() };
+    while !stop.load(Ordering::Relaxed) {
+        wait(s.event)?;
+        while unsafe { capture.GetNextPacketSize()? } > 0 {
+            let (mut data, mut frames, mut flags, mut qpc) = (std::ptr::null_mut(), 0u32, 0u32, 0u64);
+            unsafe { capture.GetBuffer(&mut data, &mut frames, &mut flags, None, Some(&mut qpc))? };
+            let silent = flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 || data.is_null();
+            rec.packets.push((rec.samples.len(), qpc as f64));
+            for j in 0..frames as usize {
+                let v = if silent {
+                    0.0
+                } else {
+                    unsafe { (*(data as *const f32).add(j * 2) + *(data as *const f32).add(j * 2 + 1)) * 0.5 }
+                };
+                rec.samples.push(v);
+            }
+            unsafe { capture.ReleaseBuffer(frames)? };
+        }
+    }
+    Ok(rec)
+}
+
+/// Current QPC time in 100 ns units, the clock capture timestamps use.
+fn qpc_now() -> f64 {
+    use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+    let (mut count, mut freq) = (0i64, 0i64);
+    unsafe {
+        let _ = QueryPerformanceCounter(&mut count);
+        let _ = QueryPerformanceFrequency(&mut freq);
+    }
+    count as f64 / freq.max(1) as f64 * 1e7
+}
+
+/// Plays `count` short sine beeps, `spacing` frames apart, into a render device. Returns the QPC
+/// time (100 ns units) at which each beep reaches the far end of the queue: the time it was
+/// written plus the audio already queued ahead of it. This doesn't rely on the device clock,
+/// which can be off by tens of milliseconds on virtual cables.
+pub fn render_beeps(device: &IMMDevice, count: usize, spacing: usize, beep: &[f32]) -> Result<Vec<f64>> {
+    let s = open(device, 2, RENDER_BUFFER_HNS)?;
+    let render: IAudioRenderClient = unsafe { s.client.GetService()? };
+    let buffer_frames = unsafe { s.client.GetBufferSize()? };
+    unsafe { s.client.Start()? };
+    let total = count * spacing;
+    let (mut written, mut times) = (0usize, Vec::with_capacity(count));
+    while written < total {
+        wait(s.event)?;
+        let queued = unsafe { s.client.GetCurrentPadding()? };
+        let n = buffer_frames - queued;
+        if n == 0 {
+            continue;
+        }
+        let now = qpc_now();
+        let data = unsafe { render.GetBuffer(n)? };
+        let buf = unsafe { std::slice::from_raw_parts_mut(data as *mut f32, n as usize * 2) };
+        for (i, frame) in buf.chunks_exact_mut(2).enumerate() {
+            let at = written + i;
+            let offset = at % spacing;
+            if offset == 0 && at < total {
+                times.push(now + (queued as f64 + i as f64) / SAMPLE_RATE as f64 * 1e7);
+            }
+            frame.fill(if at < total { beep.get(offset).copied().unwrap_or(0.0) } else { 0.0 });
+        }
+        unsafe { render.ReleaseBuffer(n, 0)? };
+        written += n as usize;
+    }
+    // Let the last beep leave the queue before the stream stops.
+    std::thread::sleep(std::time::Duration::from_millis((buffer_frames as u64 * 1000) / SAMPLE_RATE as u64 + 20));
+    Ok(times)
+}
+
 #[cfg(test)]
 pub mod probe {
     use std::sync::atomic::{AtomicBool, Ordering};
