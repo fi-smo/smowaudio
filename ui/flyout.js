@@ -120,6 +120,17 @@ function makeFader(label, onInput) {
 
 // Built once and then updated in place, so a slider is never replaced under the mouse.
 const rows = [];
+// Meter segments are real elements rather than a repeating gradient: the browser snaps elements to
+// whole pixels, so they stay even at 125 % or 150 % display scaling. The lit copy sits on top of the
+// dark one and is cut off at the level.
+const SEGMENTS = 30;
+function segments(lit) {
+  return h("span", { class: lit ? "segs lit" : "segs" }, ...Array.from({ length: SEGMENTS }, (_, k) =>
+    h("i", lit && k >= SEGMENTS * 0.85 ? { class: "hot" } : lit && k >= SEGMENTS * 0.7 ? { class: "warn" } : {})));
+}
+/** Rounds a meter percentage to whole segments, like LEDs. */
+const toSegment = (pct) => Math.round((pct / 100) * SEGMENTS) * (100 / SEGMENTS);
+
 const meters = []; // per channel: { lit, peak, hold, holdAt, muted }
 
 function buildRows() {
@@ -133,11 +144,11 @@ function buildRows() {
     });
     const mute = h("button", { type: "button", class: "btn mute fly-mute" });
     // One continuous meter under the fader: max of left and right, with the mixer's peak hold.
-    const lit = h("i", { class: "lit" }), peak = h("i", { class: "peak", hidden: "" });
+    const lit = segments(true), peak = h("i", { class: "peak", hidden: "" });
     meters[i] = { lit, peak, hold: 0, holdAt: 0, muted: false };
     const row = h("div", { class: "fly-row", style: `--c:${c.color}` },
       h("span", { class: "tape" }, c.name),
-      h("div", { class: "fly-stack" }, fader, h("span", { class: "fly-level", "aria-hidden": "true" }, lit, peak)),
+      h("div", { class: "fly-stack" }, fader, h("span", { class: "fly-level", "aria-hidden": "true" }, segments(false), lit, peak)),
       out, mute);
     const showMute = (muted) => {
       mute.setAttribute("aria-pressed", String(muted));
@@ -236,6 +247,10 @@ async function load() {
   render();
 }
 
+// The mic meter is in the page from the start; give it the same segments.
+const micLevel = segments(true);
+$("#fly-mic-level").replaceWith(segments(false), micLevel);
+
 async function pollMeters() {
   if (!document.hidden && snap) {
     try {
@@ -245,15 +260,15 @@ async function pollMeters() {
         const meter = meters[i];
         if (!meter) return;
         // A muted channel's meter stays empty.
-        const pct = meter.muted ? 0 : meterPct(Math.max(pair[0], pair[1]));
+        const pct = meter.muted ? 0 : toSegment(meterPct(Math.max(pair[0], pair[1])));
         meter.lit.style.setProperty("--lvl", `${pct}%`);
         // Same peak hold as the mixer: hold for 0.9 s, then fall.
         if (pct >= meter.hold) { meter.hold = pct; meter.holdAt = now; }
         else if (now - meter.holdAt > 900) meter.hold = Math.max(pct, meter.hold - 2.5);
-        meter.peak.style.setProperty("--pk", `${meter.hold}%`);
+        meter.peak.style.setProperty("--pk", `${toSegment(meter.hold)}%`);
         meter.peak.hidden = meter.hold <= 0;
       });
-      $("#fly-mic-level").style.setProperty("--lvl", `${micSilent ? 0 : meterPct(m.mic.output_db)}%`);
+      micLevel.style.setProperty("--lvl", `${micSilent ? 0 : toSegment(meterPct(m.mic.output_db))}%`);
     } catch { /* engine restarting */ }
   }
   setTimeout(pollMeters, 50);

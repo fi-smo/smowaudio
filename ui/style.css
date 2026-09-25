@@ -506,13 +506,14 @@ html:has(body.flyout-body), body.flyout-body { background: transparent; }
 }
 .hfader .cap::after { content: ""; position: absolute; top: 4px; bottom: 4px; left: 50%; width: 2px; margin-left: -1px; background: var(--c); border-radius: 1px; }
 /* 3px continuous meter under the fader, cut off at the level. */
-.fly-level { position: relative; display: block; height: 3px; border-radius: 2px; background: var(--raised); overflow: hidden; }
-.fly-level .lit, .fly-level > i:not(.peak) {
-  position: absolute; inset: 0; border-radius: 2px;
-  background: linear-gradient(to right, var(--ok) 0 70%, var(--warn) 70% 85%, var(--hot) 85% 100%);
-  clip-path: inset(0 calc(100% - var(--lvl, 0%)) 0 0);
-}
-.fly-level .peak { position: absolute; top: 0; bottom: 0; width: 2px; left: min(var(--pk, 0%), calc(100% - 2px)); background: var(--text); opacity: .6; }
+.fly-level { position: relative; display: block; height: 4px; }
+.fly-level .segs { position: absolute; inset: 0; display: flex; gap: 2px; }
+.fly-level .segs i { flex: 1; min-width: 0; border-radius: 1px; background: var(--seg-off); }
+.fly-level .segs.lit { clip-path: inset(0 calc(100% - var(--lvl, 0%)) 0 0); }
+.fly-level .segs.lit i { background: var(--ok); }
+.fly-level .segs.lit i.warn { background: var(--warn); }
+.fly-level .segs.lit i.hot { background: var(--hot); }
+.fly-level .peak { position: absolute; top: -1px; bottom: -1px; width: calc(100% / 30 - 2px); left: min(var(--pk, 0%), calc(100% - 100% / 30)); background: var(--text); opacity: .7; border-radius: 1px; }
 
 /* Mic panel: state and level, then Mute and Listen. */
 .fly-mic { --c: var(--mic); display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 8px 10px; align-items: center; padding: 9px 10px; }
@@ -520,7 +521,7 @@ html:has(body.flyout-body), body.flyout-body { background: transparent; }
 .fly-mic-state { display: grid; gap: 4px; min-width: 0; }
 #fly-mic-text { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #fly-mic-text.warn { color: var(--warn); }
-.fly-mic .fly-level > i { background: var(--ok); }
+.fly-mic .fly-level .segs.lit i { background: var(--ok); }
 .fly-mic-btns { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .fly-mic-btns .btn { height: 26px; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; padding: 0 8px; }
 .btn.listen[aria-pressed="true"] { border-color: var(--mic); color: var(--mic); background: color-mix(in srgb, var(--mic) 14%, var(--panel)); }
