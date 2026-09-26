@@ -3,6 +3,11 @@
 Every release needs a section here: the release build takes its notes from it, and the app shows
 them under Settings → Updates.
 
+## 0.9.1 — 2026-09-26
+- Switching your mic on or off no longer interrupts what's playing; only the stream that changed restarts
+- A mic that's switched off shows as "Mic off" instead of a warning
+- The tray icon shows when your mic is muted, and its tooltip shows the output, master volume and mic
+
 ## 0.9.0 — 2026-09-25
 - Each pair of headphones or speakers keeps its own master volume and EQ (Settings → Devices)
 - Updates install automatically while the window is closed and nothing is playing; switch it off in Settings → Updates
