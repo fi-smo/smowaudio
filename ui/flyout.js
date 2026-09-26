@@ -177,7 +177,8 @@ const deviceMissing = (reason) => /no physical audio device/i.test(reason ?? "")
 
 /** Header pill: "All running", or the shortest useful reason. */
 function renderStatus() {
-  const bad = Object.entries(snap.status).filter(([, v]) => v !== "running");
+  // A mic that's switched off isn't a problem; the mic panel says so.
+  const bad = Object.entries(snap.status).filter(([k, v]) => v !== "running" && !(k === "Microphone" && deviceMissing(v)));
   const text = !bad.length ? "All running"
     : bad.length > 1 ? `${bad.length} streams stopped`
     : bad[0][0] === "Microphone" ? "Mic stopped"
@@ -190,17 +191,19 @@ function renderStatus() {
 function renderMic() {
   const mic = snap.config.mic;
   const state = snap.status.Microphone;
-  const missing = state !== undefined && state !== "running";
+  const stopped = state !== undefined && state !== "running";
+  const off = stopped && deviceMissing(state);
+  const failed = stopped && !off;
   const name = snap.active_mic ? shortName(snap.active_mic) : "Automatic";
   const text = state === undefined ? "No Virtual Mic cable set up"
-    : !missing ? `${mic.muted ? "Muted" : "Live"} · ${name}`
-    : deviceMissing(state) ? "No microphone found" : "Mic stopped";
+    : !stopped ? `${mic.muted ? "Muted" : "Live"} · ${name}`
+    : off ? "Off · not connected" : "Mic stopped";
   const el = $("#fly-mic-text");
   el.textContent = text;
-  el.title = missing ? state : snap.active_mic ?? "";
-  el.classList.toggle("warn", missing);
-  $("#fly-mic").classList.toggle("problem", missing);
-  micSilent = missing || mic.muted || state === undefined;
+  el.title = failed ? state : off ? "Starts by itself when the mic is switched on" : snap.active_mic ?? "";
+  el.classList.toggle("warn", failed);
+  $("#fly-mic").classList.toggle("problem", failed);
+  micSilent = stopped || mic.muted || state === undefined;
   const mute = $("#fly-mute");
   mute.setAttribute("aria-pressed", String(mic.muted));
   mute.title = mic.muted ? "Unmute the mic" : "Mute the mic";

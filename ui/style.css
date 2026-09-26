@@ -653,6 +653,8 @@ select.input.invalid { border-color: var(--hot); }
 .health-grid span i { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); flex: none; }
 .health-grid span.bad { color: var(--hot); }
 .health-grid span.bad i { background: var(--hot); }
+.health-grid span.off { color: var(--faint); }
+.health-grid span.off i { background: transparent; box-shadow: inset 0 0 0 1px var(--faint); }
 .linkish { display: inline-flex; align-items: center; gap: 4px; border: 0; background: none; padding: 2px 4px; color: var(--muted); font-size: 12px; cursor: pointer; border-radius: 4px; }
 .linkish:hover { color: var(--text); }
 .chev { width: 7px; height: 7px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: translateY(-2px) rotate(45deg); }

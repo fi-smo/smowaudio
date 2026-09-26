@@ -73,6 +73,20 @@ pub struct Config {
     pub auto_update: bool,
 }
 
+/// Device ids (or "none") for the output and the mic, and whether each cable is present.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DeviceFingerprint {
+    pub output: String,
+    pub mic: String,
+    pub cables: String,
+}
+
+impl std::fmt::Display for DeviceFingerprint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "output={} mic={} cables={}", self.output, self.mic, self.cables)
+    }
+}
+
 /// What an output device remembers. Mute stays shared: it shouldn't come back on its own
 /// when the device changes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -206,9 +220,9 @@ impl Config {
         }
     }
 
-    /// The physical devices and cables the engine would use right now. When this changes (e.g.
-    /// headphones plugged in while following the Windows default), streams need a restart.
-    pub fn device_fingerprint(&self) -> String {
+    /// The physical devices and cables the engine would use right now. When a part changes (e.g.
+    /// headphones plugged in while following the Windows default), the streams using it reopen.
+    pub fn device_fingerprint(&self) -> DeviceFingerprint {
         let active: HashSet<String> = [Flow::Render, Flow::Capture]
             .into_iter()
             .filter_map(|f| device::list(f).ok())
@@ -232,12 +246,11 @@ impl Config {
                 None => "-",
             })
             .collect();
-        format!(
-            "output={} mic={} cables={}",
-            resolve(Flow::Render, &self.output_device),
-            resolve(Flow::Capture, &self.mic_device),
-            cables.join(",")
-        )
+        DeviceFingerprint {
+            output: resolve(Flow::Render, &self.output_device),
+            mic: resolve(Flow::Capture, &self.mic_device),
+            cables: cables.join(","),
+        }
     }
 
     /// Exe name -> render device id, for the routing watcher.

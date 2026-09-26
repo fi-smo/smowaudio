@@ -138,6 +138,16 @@ pub fn run_capture(
     device: &IMMDevice,
     channels: u16,
     stop: &AtomicBool,
+    on_data: impl FnMut(&[f32], bool),
+) -> Result<()> {
+    run_capture_while(device, channels, || !stop.load(Ordering::Relaxed), on_data)
+}
+
+/// Like [`run_capture`], recording for as long as `keep_going` says so.
+pub fn run_capture_while(
+    device: &IMMDevice,
+    channels: u16,
+    keep_going: impl Fn() -> bool,
     mut on_data: impl FnMut(&[f32], bool),
 ) -> Result<()> {
     let s = open(device, channels, CAPTURE_BUFFER_HNS)?;
@@ -149,7 +159,7 @@ pub fn run_capture(
     phase("mmcss");
     let _mmcss = ProAudioThread::new();
 
-    while !stop.load(Ordering::Relaxed) {
+    while keep_going() {
         phase("wait");
         wait(s.event)?;
         phase("read");

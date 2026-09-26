@@ -86,5 +86,6 @@ src-tauri/src/
   audio/routing.rs   per-app output device (AudioPolicyConfig) and session listing
   dsp/               EQ (biquads), gate, compressor, DeepFilterNet wrapper, chains
 ui/                  plain HTML/CSS/JS (no bundler)
+  app/*.js           main window, one script per view (core, mixer, apps, mic, settings, shortcuts, main)
 vendor/DeepFilterNet official libDF + DFN3 model with a small port to current tract (see VENDORED.md)
 ```

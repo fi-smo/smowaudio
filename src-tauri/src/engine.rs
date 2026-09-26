@@ -156,6 +156,8 @@ pub struct Shared {
     /// makes the output stream reopen on it without touching the other streams.
     output_device: Mutex<Option<String>>,
     output_generation: AtomicU64,
+    /// Bumped to make the microphone stream reopen.
+    mic_generation: AtomicU64,
     mic_test: Mutex<MicTest>,
     /// The mic test is playing: the output mixes the monitor path even with listening off.
     mic_test_playing: AtomicBool,
@@ -185,6 +187,7 @@ impl Engine {
             monitor: AtomicBool::new(config.mic.monitor),
             output_device: Mutex::new(config.output_device.clone()),
             output_generation: AtomicU64::new(0),
+            mic_generation: AtomicU64::new(0),
             mic_test: Mutex::new(MicTest::default()),
             mic_test_playing: AtomicBool::new(false),
             meters: Mutex::new(Meters::default()),
@@ -227,7 +230,17 @@ impl Engine {
     /// Switches the headphones/speakers output live; only the output stream restarts.
     pub fn set_output(&self, output: Option<String>) {
         *self.shared.output_device.lock() = output;
+        self.reopen_output();
+    }
+
+    /// Reopens the output stream (it picks the device again), leaving every other stream alone.
+    pub fn reopen_output(&self) {
         self.shared.output_generation.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Reopens the microphone stream (it picks the device again), leaving every other stream alone.
+    pub fn reopen_mic(&self) {
+        self.shared.mic_generation.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Starts a 5 s mic test recording. Fails if there's no microphone running.
@@ -504,8 +517,11 @@ impl Engine {
         let preferred_mic = config.previous_default(Flow::Capture);
         self.supervise_with("Microphone", init, move |st, stop| {
             stream::phase("find device");
+            let generation = shared.mic_generation.load(Ordering::Relaxed);
             let device = device::resolve_physical(Flow::Capture, mic_id.as_deref(), preferred_mic.as_deref())?;
-            stream::run_capture(&device, 1, stop, |samples, glitch| {
+            let keep_going =
+                || !stop.load(Ordering::Relaxed) && shared.mic_generation.load(Ordering::Relaxed) == generation;
+            stream::run_capture_while(&device, 1, keep_going, |samples, glitch| {
                 if glitch {
                     mic_stats.record_glitch();
                 }

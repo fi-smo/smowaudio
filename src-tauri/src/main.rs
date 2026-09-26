@@ -40,12 +40,16 @@ struct AppState {
     /// Shortcuts Windows refused to register, by action id (shown next to them in Settings).
     hotkey_errors: Mutex<BTreeMap<String, String>>,
     /// Devices the streams were last set up for; the device watcher restarts them when it changes.
-    device_fingerprint: Mutex<String>,
+    device_fingerprint: Mutex<config::DeviceFingerprint>,
     updates: updates::Updates,
     /// Height the flyout's content last asked for, in CSS pixels.
     flyout_height: Mutex<Option<f64>>,
     /// The device the output is playing to right now, as the engine reported it.
     playing_output: Mutex<Option<String>>,
+    /// Its name, for the tray icon's tooltip.
+    playing_output_name: Mutex<Option<String>>,
+    /// What the tray shows now: (mic muted, tooltip), so it's only redrawn when that changes.
+    tray_shown: Mutex<(bool, String)>,
 }
 
 impl AppState {
@@ -325,6 +329,52 @@ fn get_meters(state: State<AppState>) -> Meters {
 /// doesn't get redrawn under the cursor.
 fn notify_config_changed(app: &AppHandle, source: &str) {
     let _ = app.emit("config-changed", serde_json::json!({ "source": source }));
+    refresh_tray(app);
+}
+
+const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
+/// The same bars with a red "off" badge, while the mic is muted.
+const TRAY_ICON_MUTED: &[u8] = include_bytes!("../icons/tray-muted.png");
+
+/// Shows the mic's mute on the tray icon, and the output, master and mic in its tooltip.
+fn refresh_tray(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let (muted, master) = {
+        let config = state.config.lock();
+        (config.mic.muted, config.master.clone())
+    };
+    let mic = state.engine.lock().as_ref().and_then(|e| e.shared.status.lock().get("Microphone").cloned());
+    let mic = match mic.as_deref() {
+        None => None,
+        Some("running") if muted => Some("Mic muted"),
+        Some("running") => Some("Mic on"),
+        Some(_) if muted => Some("Mic muted (not connected)"),
+        Some(_) => Some("Mic off"),
+    };
+    let master = if master.muted { "Master muted".to_string() } else { format!("Master {} %", (master.volume * 100.0).round()) };
+    let mut tooltip = String::from("Smowaudio");
+    if let Some(output) = state.playing_output_name.lock().as_deref() {
+        tooltip += &format!("\n{output}");
+    }
+    tooltip += &format!("\n{master}");
+    if let Some(mic) = mic {
+        tooltip += &format!(" · {mic}");
+    }
+    // Windows cuts tray tooltips off at 127 characters.
+    let tooltip: String = tooltip.chars().take(127).collect();
+    {
+        let mut shown = state.tray_shown.lock();
+        if *shown == (muted, tooltip.clone()) {
+            return;
+        }
+        *shown = (muted, tooltip.clone());
+    }
+    if let Some(tray) = app.tray_by_id("tray") {
+        let _ = tray.set_tooltip(Some(&tooltip));
+        if let Ok(icon) = tauri::image::Image::from_bytes(if muted { TRAY_ICON_MUTED } else { TRAY_ICON }) {
+            let _ = tray.set_icon(Some(icon));
+        }
+    }
 }
 
 /// On/off settings without side effects beyond the config: "master_per_output", "auto_update".
@@ -878,10 +928,12 @@ fn main() {
         pending_view: Mutex::new(None),
         flyout_hidden_at: Mutex::new(None),
         hotkey_errors: Mutex::new(BTreeMap::new()),
-        device_fingerprint: Mutex::new(String::new()),
+        device_fingerprint: Mutex::new(Default::default()),
         updates: updates::Updates::default(),
         flyout_height: Mutex::new(None),
         playing_output: Mutex::new(None),
+        playing_output_name: Mutex::new(None),
+        tray_shown: Mutex::new((false, String::new())),
     };
 
     let app = tauri::Builder::default()
@@ -928,7 +980,7 @@ fn main() {
             let menu = Menu::with_items(app, &[&open, &quit])?;
             TrayIconBuilder::with_id("tray")
                 // Bars without the app icon's tile, so they read at tray size on light and dark taskbars.
-                .icon(tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?)
+                .icon(tauri::image::Image::from_bytes(TRAY_ICON)?)
                 .tooltip("Smowaudio")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
@@ -974,9 +1026,17 @@ fn main() {
             engine::on_output_opened(move |id| {
                 let handle = output_handle.clone();
                 std::thread::spawn(move || {
-                    if handle.state::<AppState>().output_opened(id) {
+                    let state = handle.state::<AppState>();
+                    {
+                        let _com = audio::ComGuard::new();
+                        let name = device::by_id(&id).and_then(|d| device::friendly_name(&d)).ok();
+                        *state.playing_output_name.lock() = name;
+                    }
+                    if state.output_opened(id) {
                         append_log("master volume and EQ switched to the output device's own");
                         notify_config_changed(&handle, "output");
+                    } else {
+                        refresh_tray(&handle);
                     }
                 });
             });
@@ -996,10 +1056,35 @@ fn main() {
                     || {
                         let state = watcher_handle.state::<AppState>();
                         let now = state.config.lock().device_fingerprint();
-                        if now != *state.device_fingerprint.lock() {
+                        let before = state.device_fingerprint.lock().clone();
+                        if now == before {
+                            return;
+                        }
+                        // A cable coming or going changes which streams exist: start over. The
+                        // output or the mic only needs its own stream reopened, so a mic being
+                        // switched on doesn't interrupt what's playing.
+                        if now.cables != before.cables {
                             append_log(&format!("audio devices changed ({now}); restarting streams"));
                             state.restart_engine();
+                            return;
                         }
+                        if let Some(engine) = state.engine.lock().as_ref() {
+                            if now.output != before.output {
+                                append_log(&format!("output device changed ({}); reopening the output", now.output));
+                                engine.reopen_output();
+                            }
+                            if now.mic != before.mic {
+                                append_log(&format!("microphone changed ({}); reopening the mic", now.mic));
+                                engine.reopen_mic();
+                            }
+                        }
+                        *state.device_fingerprint.lock() = now;
+                        // The mic reports whether it started a moment later; update the tray then.
+                        let handle = watcher_handle.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(Duration::from_millis(1500));
+                            refresh_tray(&handle);
+                        });
                     },
                 );
                 if let Err(e) = result {
