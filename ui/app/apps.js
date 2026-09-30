@@ -18,7 +18,7 @@ function renderApps() {
     const zone = h("div", { class: "dropzone", hidden: list.length > 0 }, h("span", { class: "dz-text" }, "Drag an app here"));
     const lane = h("section", { class: "lane", style: `--c:${c.color}`, "aria-label": `${c.name} channel`, "data-lane": i },
       h("div", { class: "lane-head" }, tape(c.name), h("small", {}, `${list.length} app${list.length === 1 ? "" : "s"}`)),
-      ...list.map(appCard),
+      ...list.map((app) => appCard(app)),
       zone,
       i === 0 ? h("p", { class: "lane-note" }, h("span", { class: "info", "aria-hidden": "true" }, "i"), "Default channel. System sounds and new apps play here.") : null);
     lane.addEventListener("dragover", (e) => {
