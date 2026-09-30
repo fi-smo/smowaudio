@@ -3,6 +3,9 @@
 Every release needs a section here: the release build takes its notes from it, and the app shows
 them under Settings → Updates.
 
+## 0.9.2 — 2026-09-30
+- Fixed apps after the first one in a channel showing tilted and refusing to be dragged in the Apps tab
+
 ## 0.9.1 — 2026-09-26
 - Switching your mic on or off no longer interrupts what's playing; only the stream that changed restarts
 - A mic that's switched off shows as "Mic off" instead of a warning
