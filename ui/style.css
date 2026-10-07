@@ -302,6 +302,7 @@ select.input {
 .app-line.sub { align-items: center; }
 .appcard .level { margin-left: auto; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .appcard .level.silent { color: var(--faint); }
+.appcard .app-note { font-size: 11px; color: var(--warn); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; cursor: help; }
 .appcard .move { width: 28px; height: 28px; padding: 0; display: grid; place-items: center; }
 .appcard .move svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
 .appcard .move[aria-expanded="true"] { background: var(--panel); color: var(--text); }

@@ -48,6 +48,7 @@ function renderApps() {
       h("span", { class: "pill" }, h("span", { class: "dot" }), h("b", {}, `${playing} playing`))),
     apps.length ? lanes : h("p", { class: "hint" }, "No apps are playing audio right now. Start something and it appears here."));
   laneSignature = signature();
+  updateAppNotes();
 }
 
 function leaveLane(lane) {
@@ -70,6 +71,7 @@ function appCard(app, ghost = false) {
       h("div", { class: "app-line" }, h("span", { class: "title", title: app.name }, app.name), h("em", { class: "exe" }, app.exe)),
       h("div", { class: "app-line sub" },
         where.chosen ? null : h("span", { class: "badge", title: "Not placed yet: follows the Windows default, Game" }, "Default"),
+        ghost ? null : h("span", { class: "app-note", "data-note": app.exe, hidden: true }, "Reopen to move"),
         h("span", { class: "level num silent", "data-level-db": ghost ? null : app.exe }, "−∞"))));
   if (ghost) return card;
   const move = h("button", { type: "button", class: "iconbtn move", title: `Move ${app.name} to another channel`, "aria-label": `Move ${app.name}`, "aria-haspopup": "menu" });
@@ -182,6 +184,7 @@ async function moveApp(exe, channel) {
   if (!app) return;
   try {
     await invoke("assign_app", { pid: app.pids[0], exe, channel });
+    stuckSince.delete(exe);
     if (channel === null) delete snap.config.app_rules[exe];
     else snap.config.app_rules[exe] = channel;
     renderApps();

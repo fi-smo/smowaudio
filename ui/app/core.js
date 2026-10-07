@@ -268,8 +268,9 @@ function eqEditor(eq, onChange, { lead = [], onClose = null, showSwitch = true, 
 function groupApps(list) {
   const byExe = new Map();
   for (const a of list) {
-    const g = byExe.get(a.exe) ?? { exe: a.exe, name: a.name, path: a.path, pids: [], active: false, peak: 0, assigned_device: null };
+    const g = byExe.get(a.exe) ?? { exe: a.exe, name: a.name, path: a.path, pids: [], active: false, peak: 0, assigned_device: null, playing_on: [] };
     g.pids.push(a.pid);
+    for (const id of a.playing_on ?? []) if (!g.playing_on.includes(id)) g.playing_on.push(id);
     g.active ||= a.active;
     g.peak = Math.max(g.peak, a.peak);
     g.assigned_device ||= a.assigned_device;
@@ -311,6 +312,38 @@ function channelOf(app) {
 }
 async function refreshApps() {
   try { apps = groupApps(await invoke("list_apps")); } catch (e) { return; }
+  trackStuckApps();
   updateStripIcons();
   if (view === "apps") updateLanes();
+  updateAppNotes();
+}
+
+// Some apps (Apple Music) pick their output only when they start, so a move shows up after they
+// restart. Spot an app still playing on another device a while after it was placed, and say so.
+const STUCK_AFTER_MS = 2500;
+const stuckSince = new Map(); // exe -> when it was first seen playing on the wrong device
+
+function trackStuckApps() {
+  const now = Date.now();
+  const stuck = new Set();
+  for (const app of apps) {
+    const { index, chosen } = channelOf(app);
+    const sink = snap.config.channels[index]?.sink;
+    if (app.active && chosen && sink && app.playing_on.length && !app.playing_on.includes(sink)) stuck.add(app.exe);
+  }
+  for (const exe of [...stuckSince.keys()]) if (!stuck.has(exe)) stuckSince.delete(exe);
+  for (const exe of stuck) if (!stuckSince.has(exe)) stuckSince.set(exe, now);
+}
+
+function updateAppNotes() {
+  const now = Date.now();
+  document.querySelectorAll("[data-note]").forEach((el) => {
+    const app = apps.find((a) => a.exe === el.dataset.note);
+    const since = stuckSince.get(el.dataset.note);
+    el.hidden = !app || since === undefined || now - since < STUCK_AFTER_MS;
+    if (!el.hidden) {
+      const channel = CHANNELS[channelOf(app).index].name;
+      el.title = `${app.name} chooses its output only when it starts. Close and reopen it to hear it on ${channel}.`;
+    }
+  });
 }

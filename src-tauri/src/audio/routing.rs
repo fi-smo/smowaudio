@@ -105,12 +105,16 @@ pub struct AudioApp {
     pub assigned_device: Option<String>,
     /// Whether any of its sessions is currently playing.
     pub active: bool,
+    /// Devices its playing sessions are on right now. Differs from `assigned_device` while an app
+    /// that only picks its output at start (Apple Music) hasn't been restarted since a move.
+    pub playing_on: Vec<String>,
     /// Current peak level across its sessions, 0..1.
     pub peak: f32,
 }
 
-/// Product name from an exe's version resource, falling back to its file name. Cached because the
-/// Apps view refreshes every second.
+/// The app's name: a Store app's own name (so its helper processes, like Apple Music's
+/// AMPLibraryAgent.exe, read "Apple Music"), else the product name from the exe's version
+/// resource, else the file name. Cached because the Apps view refreshes every second.
 fn display_name(path: &str, exe: &str) -> String {
     static CACHE: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<String, String>>> =
         std::sync::OnceLock::new();
@@ -118,13 +122,38 @@ fn display_name(path: &str, exe: &str) -> String {
     if let Some(name) = cache.lock().get(path) {
         return name.clone();
     }
-    let name = file_description(path).filter(|d| !d.is_empty()).unwrap_or_else(|| {
+    let name = package_display_name(path).or_else(|| file_description(path)).filter(|d| !d.is_empty()).unwrap_or_else(|| {
         let stem = exe.strip_suffix(".exe").unwrap_or(exe);
         let mut chars = stem.chars();
         chars.next().map(|first| first.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
     });
     cache.lock().insert(path.to_string(), name.clone());
     name
+}
+
+/// For an exe inside a Store package (C:\Program Files\WindowsApps\<package full name>\...), the
+/// package's display name from its manifest, resolving `ms-resource:` names through Windows.
+fn package_display_name(path: &str) -> Option<String> {
+    let lower = path.to_lowercase();
+    let start = lower.find(r"\windowsapps\")? + r"\windowsapps\".len();
+    let full_name = path[start..].split('\\').next()?;
+    let package_name = full_name.split('_').next()?;
+    let manifest_path = format!("{}{full_name}\\AppxManifest.xml", &path[..start]);
+    let manifest = std::fs::read_to_string(manifest_path).ok()?;
+    let value = manifest.split("<DisplayName>").nth(1)?.split("</DisplayName>").next()?.trim();
+    let Some(resource) = value.strip_prefix("ms-resource:") else {
+        return Some(value.to_string());
+    };
+    let uri = if resource.starts_with("//") {
+        format!("ms-resource:{resource}")
+    } else {
+        format!("ms-resource://{package_name}/Resources/{resource}")
+    };
+    let source = HSTRING::from(format!("@{{{full_name}? {uri}}}"));
+    let mut buf = [0u16; 256];
+    unsafe { windows::Win32::UI::Shell::SHLoadIndirectString(&source, &mut buf, None) }.ok()?;
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    Some(String::from_utf16_lossy(&buf[..len]))
 }
 
 fn file_description(path: &str) -> Option<String> {
@@ -174,7 +203,9 @@ pub fn list_apps() -> Result<Vec<AudioApp>> {
     let mut apps: BTreeMap<u32, AudioApp> = BTreeMap::new();
 
     for i in 0..unsafe { collection.GetCount()? } {
-        let Ok(manager) = (unsafe { collection.Item(i)?.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) }) else {
+        let item = unsafe { collection.Item(i)? };
+        let device_id = device::device_id(&item).unwrap_or_default();
+        let Ok(manager) = (unsafe { item.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) }) else {
             continue;
         };
         let sessions = unsafe { manager.GetSessionEnumerator()? };
@@ -188,6 +219,7 @@ pub fn list_apps() -> Result<Vec<AudioApp>> {
                 continue;
             }
             let active = matches!(state, Ok(s) if s == AudioSessionStateActive);
+            let playing_on = if active { vec![device_id.clone()] } else { Vec::new() };
             let peak = control
                 .cast::<IAudioMeterInformation>()
                 .ok()
@@ -196,13 +228,27 @@ pub fn list_apps() -> Result<Vec<AudioApp>> {
             if let Some(app) = apps.get_mut(&pid) {
                 app.active |= active;
                 app.peak = app.peak.max(peak);
+                for id in playing_on {
+                    if !app.playing_on.contains(&id) {
+                        app.playing_on.push(id);
+                    }
+                }
                 continue;
             }
             let Some(path) = process_path(pid) else { continue };
             let exe = path.rsplit('\\').next().unwrap_or(&path).to_lowercase();
             apps.insert(
                 pid,
-                AudioApp { pid, name: display_name(&path, &exe), exe, assigned_device: get_app_output(pid), path, active, peak },
+                AudioApp {
+                    pid,
+                    name: display_name(&path, &exe),
+                    exe,
+                    assigned_device: get_app_output(pid),
+                    path,
+                    active,
+                    playing_on,
+                    peak,
+                },
             );
         }
     }
@@ -262,6 +308,21 @@ mod tests {
                 app.exe, app.name, app.pid, app.active, app.peak, app.assigned_device
             );
         }
+    }
+
+    #[test]
+    #[ignore = "reads this PC's installed Store apps; run with --ignored"]
+    fn store_helpers_are_named_after_their_app() {
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", "(Get-AppxPackage AppleInc.AppleMusicWin).InstallLocation"])
+            .output()
+            .expect("powershell runs");
+        let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if dir.is_empty() {
+            return; // Apple Music isn't installed
+        }
+        let agent = format!(r"{dir}\AMPLibraryAgent.exe");
+        assert_eq!(package_display_name(&agent).as_deref(), Some("Apple Music"));
     }
 
     /// Read-only diagnostic: which processes have streams open on each endpoint.
