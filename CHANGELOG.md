@@ -3,6 +3,10 @@
 Every release needs a section here: the release build takes its notes from it, and the app shows
 them under Settings → Updates.
 
+## 0.9.3 — 2026-10-07
+- Apps that only pick their output when they start, like Apple Music, show "Reopen to move" until they play on their new channel
+- Store apps' helper processes show the app's own name (Apple Music instead of AMPLibraryAgent)
+
 ## 0.9.2 — 2026-09-30
 - Fixed apps after the first one in a channel showing tilted and refusing to be dragged in the Apps tab
 
