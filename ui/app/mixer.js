@@ -18,13 +18,15 @@ function makeFader(label, value, onInput) {
     el.setAttribute("aria-valuenow", String(Math.round(v * 100)));
     el.setAttribute("aria-valuetext", `${fmtDb(dbOf(v))} dB`);
   };
-  const set = (next) => {
+  // Dragging snaps to unity so it's easy to land on 100 %; wheel and key steps don't, or a step
+  // down from 100 % (to 98 %) would snap straight back and the fader would never leave it.
+  const set = (next, snap = false) => {
     v = clamp(next, 0, MAX_VOLUME);
-    if (Math.abs(v - 1) < 0.03) v = 1; // snap to unity
+    if (snap && Math.abs(v - 1) < 0.03) v = 1;
     render(); onInput(v);
   };
   // The cap is 14px tall, so its centre travels 7px in from each end.
-  const fromY = (y) => { const r = el.getBoundingClientRect(); set(clamp((r.bottom - 7 - y) / (r.height - 14), 0, 1) * MAX_VOLUME); };
+  const fromY = (y) => { const r = el.getBoundingClientRect(); set(clamp((r.bottom - 7 - y) / (r.height - 14), 0, 1) * MAX_VOLUME, true); };
   el.addEventListener("pointerdown", (e) => { el.setPointerCapture(e.pointerId); el.dataset.dragging = ""; fromY(e.clientY); });
   el.addEventListener("pointermove", (e) => { if (el.hasPointerCapture(e.pointerId)) fromY(e.clientY); });
   el.addEventListener("lostpointercapture", () => delete el.dataset.dragging);

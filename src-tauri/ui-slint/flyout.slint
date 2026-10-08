@@ -198,14 +198,16 @@ component Fader inherits Rectangle {
     accessible-action-decrement => { set(value - 0.02); }
     accessible-action-set-value(v) => { set(v.to-float() / 100); }
 
+    // A wheel or key step: no snapping, or a step down from 100 % (to 98 %) would snap straight
+    // back and the fader would never leave it.
     function set(v: float) {
-        // Snap to unity, like the mixer.
-        let clamped = max(0, min(root.top, v));
-        root.dragged = abs(clamped - 1) < 0.03 ? 1 : clamped;
+        root.dragged = max(0, min(root.top, v));
         root.changed(root.dragged);
     }
+    // Dragging snaps to unity, like the mixer, so it's easy to land on 100 %.
     function from-x(x: length) {
-        set(max(0, min(1, (x - inset - 3px) / (track - 6px))) * root.top);
+        let v = max(0, min(1, (x - inset - 3px) / (track - 6px))) * root.top;
+        set(abs(v - 1) < 0.03 ? 1 : v);
     }
 
     // Groove.
