@@ -479,6 +479,8 @@ html:has(body.flyout-body), body.flyout-body { background: transparent; }
 .fly-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
 .fly-row { --c: var(--game); display: grid; grid-template-columns: 58px minmax(0, 1fr) 38px 28px; gap: 0 10px; align-items: center; padding: 9px 10px 8px; }
 .fly-row + .fly-row { border-top: 1px solid var(--line); }
+/* Master is the sum of the rows above it: a stronger divider sets it apart. */
+.fly-row.master { border-top: 1px solid var(--line-strong); }
 .fly-row .tape, .fly-mic .tape { font-size: 13px; padding: 0 6px; justify-self: start; }
 .fly-stack { display: grid; gap: 3px; min-width: 0; }
 /* The slider track is inset by half its thumb; the meter under it lines up with the track. */

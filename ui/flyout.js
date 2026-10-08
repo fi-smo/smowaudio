@@ -131,22 +131,36 @@ function segments(lit) {
 /** Rounds a meter percentage to whole segments, like LEDs. */
 const toSegment = (pct) => Math.round((pct / 100) * SEGMENTS) * (100 / SEGMENTS);
 
-const meters = []; // per channel: { lit, peak, hold, holdAt, muted }
+const meters = []; // per row (channels, then Master): { lit, peak, hold, holdAt, muted }
+
+/** The rows, in order: each channel, then Master (the final mix, as in the mixer). */
+const ROWS = [
+  ...CHANNELS.map((c, i) => ({
+    name: c.name, color: c.color, key: `ch${i}`,
+    settings: () => snap.config.channels[i].settings,
+    save: (s) => invoke("set_channel", { index: i, settings: s }),
+  })),
+  {
+    name: "Master", color: "var(--master)", ink: "var(--master-ink)", key: "master", master: true,
+    settings: () => snap.config.master,
+    save: (s) => invoke("set_master", { settings: s }),
+  },
+];
 
 function buildRows() {
-  $("#fly-rows").replaceChildren(...CHANNELS.map((c, i) => {
-    const settings = () => snap.config.channels[i].settings;
+  $("#fly-rows").replaceChildren(...ROWS.map((c, i) => {
+    const settings = c.settings;
     const out = h("output", {});
     const fader = makeFader(c.name, (v) => {
       settings().volume = v;
       if (!settings().muted) out.textContent = `${Math.round(v * 100)}%`;
-      send(`ch${i}`, () => invoke("set_channel", { index: i, settings: settings() }));
+      send(c.key, () => c.save(settings()));
     });
     const mute = h("button", { type: "button", class: "btn mute fly-mute" });
     // One continuous meter under the fader: max of left and right, with the mixer's peak hold.
     const lit = segments(true), peak = h("i", { class: "peak", hidden: "" });
     meters[i] = { lit, peak, hold: 0, holdAt: 0, muted: false };
-    const row = h("div", { class: "fly-row", style: `--c:${c.color}` },
+    const row = h("div", { class: "fly-row" + (c.master ? " master" : ""), style: `--c:${c.color}${c.ink ? `;--ink:${c.ink}` : ""}` },
       h("span", { class: "tape" }, c.name),
       h("div", { class: "fly-stack" }, fader, h("span", { class: "fly-level", "aria-hidden": "true" }, segments(false), lit, peak)),
       out, mute);
@@ -162,7 +176,7 @@ function buildRows() {
     mute.addEventListener("click", () => {
       settings().muted = !settings().muted;
       showMute(settings().muted);
-      send(`ch${i}`, () => invoke("set_channel", { index: i, settings: settings() }));
+      send(c.key, () => c.save(settings()));
     });
     rows[i] = (s) => {
       fader.setValue(s.volume);
@@ -216,7 +230,7 @@ function render() {
   renderOutputs();
   renderStatus();
   if (!rows.length) buildRows();
-  snap.config.channels.forEach((c, i) => rows[i]?.(c.settings));
+  ROWS.forEach((r, i) => rows[i]?.(r.settings()));
   renderMic();
 }
 
@@ -259,7 +273,7 @@ async function pollMeters() {
     try {
       const m = await invoke("get_meters");
       const now = performance.now();
-      m.channels.forEach((pair, i) => {
+      [...m.channels, m.master].forEach((pair, i) => {
         const meter = meters[i];
         if (!meter) return;
         // A muted channel's meter stays empty.
