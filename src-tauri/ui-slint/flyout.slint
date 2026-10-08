@@ -1,59 +1,7 @@
 // Tray flyout: quick channel volumes, the output device and mic controls. A native (Slint) version
 // of the old WebView flyout, with the same sizes and colours as ui/style.css.
 
-// ---------- theme ----------
-export global Theme {
-    in property <bool> dark: true;
-
-    out property <color> window: dark ? #16181d : #f6f7f9;
-    out property <color> panel: dark ? #1d2027 : #ffffff;
-    out property <color> raised: dark ? #262a33 : #eef0f4;
-    out property <color> well: dark ? #111318 : #dfe3e9;
-    out property <color> line: dark ? #2b303a : #d5d9e0;
-    out property <color> line-strong: dark ? #3d4452 : #b7bdc8;
-    out property <color> text: dark ? #e9e6df : #1a1d23;
-    out property <color> muted: dark ? #a1a7b2 : #586070;
-    out property <color> faint: dark ? #6d7481 : #868d99;
-    out property <color> game: dark ? #f0a23b : #b86e0c;
-    out property <color> chat: dark ? #4cc4a0 : #13896d;
-    out property <color> media: dark ? #ea6a92 : #bd3a66;
-    out property <color> aux: dark ? #949bff : #5059cf;
-    out property <color> mic: dark ? #6cc0f2 : #1b7fb8;
-    out property <color> master: dark ? #d9d5cc : #3a404c;
-    out property <color> tape-ink: #14161a;
-    // Master's tape is dark in the light theme, so its label needs light ink there.
-    out property <color> master-ink: dark ? tape-ink : window;
-    out property <color> ok: dark ? #58c47e : #2d9a5a;
-    out property <color> warn: dark ? #e6c14a : #c29310;
-    out property <color> hot: dark ? #ec5b56 : #cf423c;
-    out property <color> seg-off: dark ? #262a32 : #d3d8df;
-
-    out property <string> font-ui: "Segoe UI Variable Text";
-    out property <string> font-label: "Bahnschrift";
-    out property <string> font-num: "Cascadia Mono";
-
-    // Row colours by index: Game, Chat, Media, Aux, Master.
-    public pure function row-color(i: int) -> color {
-        i == 0 ? game : i == 1 ? chat : i == 2 ? media : i == 3 ? aux : master
-    }
-}
-
-// ---------- pixels ----------
-// At 150 % scaling one logical pixel is 1.5 screen pixels, and an edge that lands on half a pixel
-// gets smoothed into a blur. The browser rounded such edges to whole pixels; here small shapes
-// (meter dots, fader parts, icons) do it themselves: `align` turns an offset inside a parent at
-// `origin` (its absolute position in the window) into one whose edge falls on a whole pixel.
-export global Px {
-    /// Screen pixels per logical pixel (1.5 at 150 %), set from Rust: globals can't read it.
-    in property <float> scale: 1;
-    public pure function align(offset: length, origin: length) -> length {
-        round((origin + offset) / 1px * scale) / scale * 1px - origin
-    }
-    /// A hairline: one logical pixel, rounded down to whole screen pixels (at least one).
-    public pure function hair() -> length {
-        max(1, floor(scale)) / scale * 1px
-    }
-}
+import { Theme, Px, Icon, Tape, Btn, HMeter, HFader, SpeakerIcon, HeadphonesIcon } from "common.slint";
 
 // ---------- data ----------
 export struct Row {
@@ -69,234 +17,6 @@ export struct Device {
     label: string,
     title: string,
     selected: bool,
-}
-
-// ---------- building blocks ----------
-component Icon inherits Path {
-    in property <float> size: 16;
-    viewbox-width: size;
-    viewbox-height: size;
-    fill: transparent;
-    stroke-width: 1.4px;
-    stroke-line-cap: round;
-    stroke-line-join: round;
-}
-
-/// A channel label like the mixer's "tapes".
-component Tape inherits Rectangle {
-    in property <string> label;
-    in property <color> tint;
-    in property <color> ink: Theme.tape-ink;
-    background: tint;
-    border-radius: 3px;
-    height: 19px;
-    width: t.preferred-width + 12px;
-    t := Text {
-        text: label.to-uppercase();
-        color: ink;
-        font-family: Theme.font-label;
-        font-size: 13px;
-        font-weight: 600;
-        letter-spacing: 0.06 * 13px;
-        vertical-alignment: center;
-        horizontal-alignment: center;
-        y: 1px;
-        height: parent.height;
-    }
-}
-
-/// A small bordered button; `pressed-style` gives the "on" look (red for mute, blue for listen).
-component Btn inherits Rectangle {
-    in property <bool> on;
-    in property <color> on-color: Theme.hot;
-    in property <length> radius: 6px;
-    in property <string> label;
-    callback clicked;
-    accessible-role: button;
-    accessible-label: label;
-    accessible-checked: on;
-    accessible-action-default => { root.clicked(); }
-    out property <bool> hovered: ta.has-hover;
-    out property <color> ink: on ? on-color : Theme.text;
-    border-radius: radius;
-    border-width: Px.hair();
-    border-color: on ? on-color : ta.has-hover ? Theme.line-strong : Theme.line;
-    background: on ? on-color.mix(Theme.panel, 0.16) : Theme.raised;
-    ta := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
-    }
-    @children
-}
-
-/// 30 LED-style segments, like the mixer's meters, with a peak-hold mark. Every segment starts and
-/// ends on a whole screen pixel, so the dots stay sharp at any display scaling.
-component Meter inherits Rectangle {
-    in property <float> level; // 0..1
-    in property <float> peak; // 0..1
-    in property <bool> single-color;
-    property <int> count: 30;
-    property <int> lit: round(level * count);
-    property <int> peak-at: round(peak * count) - 1;
-    property <length> ax: self.absolute-position.x;
-    property <length> ay: self.absolute-position.y;
-    // In screen pixels: every segment gets the same whole width; the gaps take up the rest
-    // (2 or 3 pixels at 150 %), which the eye notices far less than uneven dots.
-    property <float> sc: Px.scale;
-    property <float> ax-p: ax / 1px * sc;
-    property <float> gap-p: max(1, round(2 * sc));
-    property <float> pitch-p: (self.width / 1px * sc + gap-p) / count;
-    property <float> seg-p: max(1, round(pitch-p - gap-p));
-    // Top and bottom of a segment, and of the taller peak mark.
-    property <length> top: Px.align(1px, ay);
-    property <length> bottom: Px.align(5px, ay);
-    property <length> peak-top: Px.align(0, ay);
-    property <length> peak-bottom: Px.align(6px, ay);
-    height: 6px;
-    for i in count: Rectangle {
-        x: (round(ax-p + i * pitch-p) - ax-p) / sc * 1px;
-        width: seg-p / sc * 1px;
-        // The peak mark is a little taller than the segments around it.
-        y: i == peak-at ? peak-top : top;
-        height: i == peak-at ? peak-bottom - peak-top : bottom - top;
-        border-radius: 1px;
-        background: i == peak-at ? Theme.text.with-alpha(0.7)
-            : i >= lit ? Theme.seg-off
-            : single-color ? Theme.ok
-            : i >= count * 0.85 ? Theme.hot
-            : i >= count * 0.7 ? Theme.warn
-            : Theme.ok;
-    }
-}
-
-/// Horizontal fader: same groove, colour fill, unity mark and cap as the mixer's. Drag, click,
-/// scroll or use the arrow keys; double-click resets to 100 %.
-component Fader inherits Rectangle {
-    in property <float> value; // 0..1.5, from the app
-    in property <color> tint;
-    callback changed(float);
-    property <float> top: 1.5;
-    property <length> ax: self.absolute-position.x;
-    property <length> ay: self.absolute-position.y;
-    // Edges of the groove and fill (4px tall, centred), and of the cap (18px tall).
-    property <length> groove-top: Px.align(7px, ay);
-    property <length> groove-bottom: Px.align(11px, ay);
-    property <length> inset: 6px;
-    property <length> track: self.width - 2 * inset;
-    property <float> dragged: value;
-    out property <bool> dragging: ta.pressed;
-    out property <float> shown: dragging ? dragged : value;
-    in property <string> label;
-    height: 18px;
-    accessible-role: slider;
-    accessible-label: label + " volume";
-    accessible-value: round(shown * 100);
-    accessible-value-minimum: 0;
-    accessible-value-maximum: 150;
-    accessible-value-step: 2;
-    accessible-action-increment => { set(value + 0.02); }
-    accessible-action-decrement => { set(value - 0.02); }
-    accessible-action-set-value(v) => { set(v.to-float() / 100); }
-
-    // A wheel or key step: no snapping, or a step down from 100 % (to 98 %) would snap straight
-    // back and the fader would never leave it.
-    function set(v: float) {
-        root.dragged = max(0, min(root.top, v));
-        root.changed(root.dragged);
-    }
-    // Dragging snaps to unity, like the mixer, so it's easy to land on 100 %.
-    function from-x(x: length) {
-        let v = max(0, min(1, (x - inset - 3px) / (track - 6px))) * root.top;
-        set(abs(v - 1) < 0.03 ? 1 : v);
-    }
-
-    // Groove.
-    Rectangle {
-        x: Px.align(inset, ax);
-        width: Px.align(inset + track, ax) - Px.align(inset, ax);
-        y: groove-top;
-        height: groove-bottom - groove-top;
-        background: Theme.well;
-        border-width: Px.hair();
-        border-color: Theme.line;
-        border-radius: 2px;
-    }
-    // Unity (100 %) mark.
-    Rectangle {
-        x: Px.align(inset + track * (1 / root.top), ax);
-        width: Px.hair();
-        y: Px.align(2px, ay);
-        height: Px.align(16px, ay) - Px.align(2px, ay);
-        background: Theme.line-strong;
-    }
-    // Fill.
-    Rectangle {
-        x: Px.align(inset, ax);
-        width: Px.align(inset + track * (shown / root.top), ax) - Px.align(inset, ax);
-        y: groove-top;
-        height: groove-bottom - groove-top;
-        background: tint.with-alpha(0.9);
-        border-radius: 2px;
-    }
-    // Cap.
-    cap := Rectangle {
-        x: Px.align(inset + track * (shown / root.top) - 6px, ax);
-        width: Px.align(inset + track * (shown / root.top) + 6px, ax) - self.x;
-        y: Px.align(0, ay);
-        height: Px.align(18px, ay) - self.y;
-        border-radius: 4px;
-        border-width: Px.hair();
-        border-color: Theme.line-strong;
-        background: @linear-gradient(90deg, Theme.raised 0%, Theme.panel 100%);
-        drop-shadow-blur: 4px;
-        drop-shadow-offset-y: 1px;
-        drop-shadow-color: #0000002e;
-        Rectangle {
-            x: Px.align((cap.width - 2px) / 2, root.ax + cap.x);
-            width: Px.align((cap.width + 2px) / 2, root.ax + cap.x) - self.x;
-            y: Px.align(4px, root.ay + cap.y);
-            height: Px.align(cap.height - 4px, root.ay + cap.y) - self.y;
-            background: tint;
-            border-radius: 1px;
-        }
-    }
-    ta := TouchArea {
-        mouse-cursor: ew-resize;
-        pointer-event(e) => {
-            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
-                focus.focus();
-                root.from-x(self.mouse-x);
-            }
-        }
-        moved => {
-            if self.pressed { root.from-x(self.mouse-x); }
-        }
-        double-clicked => { root.set(1); }
-        scroll-event(e) => {
-            root.set(root.value + (e.delta-y > 0 ? 0.02 : -0.02));
-            accept
-        }
-    }
-    focus := FocusScope {
-        key-pressed(e) => {
-            if e.text == Key.RightArrow || e.text == Key.UpArrow { root.set(root.value + 0.02); return accept; }
-            if e.text == Key.LeftArrow || e.text == Key.DownArrow { root.set(root.value - 0.02); return accept; }
-            if e.text == Key.PageUp { root.set(root.value + 0.1); return accept; }
-            if e.text == Key.PageDown { root.set(root.value - 0.1); return accept; }
-            if e.text == Key.Home { root.set(1); return accept; }
-            reject
-        }
-    }
-}
-
-component SpeakerIcon inherits Icon {
-    in property <bool> off;
-    commands: off ? "M2.5 6h2.5l3.5-3v10l-3.5-3h-2.5z M11 6l3.5 4M14.5 6 11 10"
-        : "M2.5 6h2.5l3.5-3v10l-3.5-3h-2.5z M11 5.5a3.5 3.5 0 0 1 0 5M12.8 3.5a6.2 6.2 0 0 1 0 9";
-}
-
-component HeadphonesIcon inherits Icon {
-    commands: "M2.5 10V8a5.5 5.5 0 0 1 11 0v2 M3 9.5h1a1 1 0 0 1 1 1v2.5a1 1 0 0 1 -1 1h-1a1 1 0 0 1 -1 -1v-2.5a1 1 0 0 1 1 -1z M12 9.5h1a1 1 0 0 1 1 1v2.5a1 1 0 0 1 -1 1h-1a1 1 0 0 1 -1 -1v-2.5a1 1 0 0 1 1 -1z";
 }
 
 /// One channel (or Master): label, fader over its meter, percentage, mute.
@@ -329,7 +49,7 @@ component ChannelRow inherits Rectangle {
         ink: index == 4 ? Theme.master-ink : Theme.tape-ink;
         opacity: data.muted ? 0.4 : 1;
     }
-    fader := Fader {
+    fader := HFader {
         x: fader-x;
         y: 9px;
         width: fader-w;
@@ -340,7 +60,7 @@ component ChannelRow inherits Rectangle {
         changed(v) => { root.volume(v); }
     }
     // The meter lines up with the groove, which is inset by half the cap.
-    Meter {
+    HMeter {
         x: fader-x + 6px;
         y: 9px + 18px + 2px;
         width: fader-w - 12px;
@@ -599,7 +319,7 @@ export component FlyoutWindow inherits Window {
                             font-size: 11px;
                             overflow: elide;
                         }
-                        Meter {
+                        HMeter {
                             level: root.mic-level;
                             single-color: true;
                         }

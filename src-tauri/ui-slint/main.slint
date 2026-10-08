@@ -1,0 +1,267 @@
+// The main window: a rail of sections on the left, a top bar with the output and stream status,
+// and the current view below it.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Px, Icon } from "common.slint";
+import { MixerView, StripData } from "mixer.slint";
+
+export { StripData }
+
+/// One section button in the rail: an icon over its name.
+component RailButton inherits Rectangle {
+    in property <string> label;
+    in property <string> icon; // 24×24 path
+    in property <bool> current;
+    callback clicked;
+    height: 56px;
+    border-radius: 8px;
+    background: current || ta.has-hover ? Theme.raised : transparent;
+    accessible-role: tab;
+    accessible-label: label;
+    accessible-item-selected: current;
+    accessible-action-default => { root.clicked(); }
+    VerticalLayout {
+        padding-top: 9px;
+        padding-bottom: 9px;
+        spacing: 3px;
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            Icon {
+                size: 24;
+                width: 20px;
+                height: 20px;
+                stroke: current || ta.has-hover ? Theme.text : Theme.muted;
+                stroke-width: 1.6px;
+                commands: root.icon;
+            }
+        }
+        Text {
+            text: root.label;
+            color: current || ta.has-hover ? Theme.text : Theme.muted;
+            font-size: 11px;
+            horizontal-alignment: center;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+/// A rounded pill: "Output  Automatic", or with a status dot.
+component Pill inherits Rectangle {
+    in property <string> k;
+    in property <string> v;
+    in property <bool> dot;
+    in property <bool> warn;
+    in property <bool> clickable;
+    callback clicked;
+    width: min(row.preferred-width + 20px, 320px);
+    height: 24px;
+    border-radius: 12px;
+    border-width: Px.hair();
+    border-color: Theme.line;
+    background: Theme.panel;
+    row := HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 6px;
+        alignment: center;
+        if root.dot: Rectangle {
+            width: 7px;
+            height: 7px;
+            y: (parent.height - 7px) / 2;
+            border-radius: 3.5px;
+            background: root.warn ? Theme.warn : Theme.ok;
+        }
+        if root.k != "": Text {
+            text: root.k;
+            color: Theme.muted;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.v;
+            color: Theme.text;
+            font-size: 12px;
+            font-weight: 500;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    if root.clickable: TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    accessible-role: button;
+    accessible-label: root.k + " " + root.v;
+    accessible-action-default => { root.clicked(); }
+}
+
+export component MainWindow inherits Window {
+    // "mixer", "apps", "mic" or "settings".
+    in-out property <string> view: "mixer";
+    in property <string> output-name: "…";
+    in property <string> status-text: "Starting";
+    in property <bool> status-warn;
+    in property <string> update-version; // "" = no update
+
+    // Mixer: the four channels, Master and Mic.
+    in property <[StripData]> channels;
+    in property <StripData> master;
+    in property <StripData> mic;
+    in property <string> buffer: "–";
+
+    callback view-changed(string);
+    callback strip-volume(int, float);
+    callback strip-mute(int);
+    callback strip-feature(int);
+    callback buffer-clicked;
+    callback status-clicked;
+    callback update-clicked;
+
+    title: "Smowaudio";
+    min-width: 440px;
+    min-height: 520px;
+    preferred-width: 1180px;
+    preferred-height: 760px;
+    background: Theme.window;
+    default-font-family: Theme.font-ui;
+    default-font-size: 14px;
+
+    function go(v: string) {
+        root.view = v;
+        root.view-changed(v);
+    }
+
+    HorizontalLayout {
+        // Rail.
+        Rectangle {
+            width: 72px;
+            background: Theme.window;
+            VerticalLayout {
+                padding: 10px;
+                padding-left: 6px;
+                padding-right: 6px;
+                spacing: 4px;
+                RailButton {
+                    label: "Mixer";
+                    current: root.view == "mixer";
+                    icon: "M6 4v16M12 4v16M18 4v16 M4.5 13h3a1 1 0 0 1 1 1v1a1 1 0 0 1 -1 1h-3a1 1 0 0 1 -1 -1v-1a1 1 0 0 1 1 -1z M10.5 7h3a1 1 0 0 1 1 1v1a1 1 0 0 1 -1 1h-3a1 1 0 0 1 -1 -1v-1a1 1 0 0 1 1 -1z M16.5 10h3a1 1 0 0 1 1 1v1a1 1 0 0 1 -1 1h-3a1 1 0 0 1 -1 -1v-1a1 1 0 0 1 1 -1z";
+                    clicked => { root.go("mixer"); }
+                }
+                RailButton {
+                    label: "Apps";
+                    current: root.view == "apps";
+                    icon: "M5.5 4h3.5a1.5 1.5 0 0 1 1.5 1.5v3.5a1.5 1.5 0 0 1 -1.5 1.5h-3.5a1.5 1.5 0 0 1 -1.5 -1.5v-3.5a1.5 1.5 0 0 1 1.5 -1.5z M15 4h3.5a1.5 1.5 0 0 1 1.5 1.5v3.5a1.5 1.5 0 0 1 -1.5 1.5h-3.5a1.5 1.5 0 0 1 -1.5 -1.5v-3.5a1.5 1.5 0 0 1 1.5 -1.5z M5.5 13.5h3.5a1.5 1.5 0 0 1 1.5 1.5v3.5a1.5 1.5 0 0 1 -1.5 1.5h-3.5a1.5 1.5 0 0 1 -1.5 -1.5v-3.5a1.5 1.5 0 0 1 1.5 -1.5z M15 13.5h3.5a1.5 1.5 0 0 1 1.5 1.5v3.5a1.5 1.5 0 0 1 -1.5 1.5h-3.5a1.5 1.5 0 0 1 -1.5 -1.5v-3.5a1.5 1.5 0 0 1 1.5 -1.5z";
+                    clicked => { root.go("apps"); }
+                }
+                RailButton {
+                    label: "Mic";
+                    current: root.view == "mic";
+                    icon: "M12 3a3 3 0 0 1 3 3v5a3 3 0 0 1 -6 0v-5a3 3 0 0 1 3 -3z M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7";
+                    clicked => { root.go("mic"); }
+                }
+                Rectangle { }
+                RailButton {
+                    label: "Settings";
+                    current: root.view == "settings";
+                    icon: "M15 12a3 3 0 1 1 -6 0a3 3 0 1 1 6 0z M10.21 5.34L10.50 2.52L13.50 2.52L13.79 5.34L15.45 6.02L17.64 4.23L19.77 6.36L17.98 8.55L18.66 10.21L21.48 10.50L21.48 13.50L18.66 13.79L17.98 15.45L19.77 17.64L17.64 19.77L15.45 17.98L13.79 18.66L13.50 21.48L10.50 21.48L10.21 18.66L8.55 17.98L6.36 19.77L4.23 17.64L6.02 15.45L5.34 13.79L2.52 13.50L2.52 10.50L5.34 10.21L6.02 8.55L4.23 6.36L6.36 4.23L8.55 6.02Z";
+                    clicked => { root.go("settings"); }
+                }
+            }
+        }
+        Rectangle {
+            width: Px.hair();
+            background: Theme.line;
+        }
+        // Top bar and the current view.
+        VerticalLayout {
+            Rectangle {
+                height: 45px;
+                HorizontalLayout {
+                    padding-left: 20px;
+                    padding-right: 20px;
+                    spacing: 12px;
+                    alignment: stretch;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Rectangle {
+                            width: 18px;
+                            for bar[i] in [0.6, 1.0, 0.75, 0.45]: Rectangle {
+                                x: i * 5px;
+                                width: 3px;
+                                height: 16px * bar;
+                                y: (parent.height - 16px) / 2 + 16px * (1 - bar);
+                                border-radius: 1px;
+                                background: Theme.row-color(i);
+                            }
+                        }
+                        Text {
+                            text: "Smowaudio";
+                            color: Theme.text;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    VerticalLayout {
+                        alignment: center;
+                        Pill { k: "Output"; v: root.output-name; }
+                    }
+                    if root.update-version != "": VerticalLayout {
+                        alignment: center;
+                        Pill {
+                            k: "Update";
+                            v: root.update-version;
+                            clickable: true;
+                            clicked => { root.update-clicked(); }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Pill {
+                            dot: true;
+                            warn: root.status-warn;
+                            v: root.status-text;
+                            clickable: true;
+                            clicked => { root.status-clicked(); }
+                        }
+                    }
+                }
+                Rectangle {
+                    y: parent.height - Px.hair();
+                    height: Px.hair();
+                    background: Theme.line;
+                }
+            }
+            ScrollView {
+                content-height: page.preferred-height;
+                content-width: self.visible-width;
+                page := VerticalLayout {
+                    width: parent.visible-width;
+                    padding-left: 20px;
+                    padding-right: 20px;
+                    padding-top: 18px;
+                    padding-bottom: 24px;
+                    if root.view == "mixer": MixerView {
+                        channels: root.channels;
+                        master: root.master;
+                        mic: root.mic;
+                        buffer: root.buffer;
+                        volume(i, v) => { root.strip-volume(i, v); }
+                        mute(i) => { root.strip-mute(i); }
+                        feature(i) => { root.strip-feature(i); }
+                        buffer-clicked => { root.buffer-clicked(); }
+                    }
+                    if root.view != "mixer": Text {
+                        text: "This section isn't in the native window yet.";
+                        color: Theme.muted;
+                        font-size: 13px;
+                    }
+                }
+            }
+        }
+    }
+}

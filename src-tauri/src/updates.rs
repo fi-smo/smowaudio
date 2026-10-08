@@ -56,6 +56,13 @@ pub struct Updates {
     pending: tauri::async_runtime::Mutex<Option<Update>>,
 }
 
+impl Updates {
+    /// The newer version found by the last check, if any.
+    pub fn status_available(&self) -> Option<String> {
+        self.status.lock().available.clone()
+    }
+}
+
 pub fn status(app: &AppHandle) -> UpdateStatus {
     let updates = app.state::<AppState>();
     let mut status = updates.updates.status.lock().clone();

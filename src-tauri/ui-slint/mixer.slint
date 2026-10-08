@@ -1,0 +1,500 @@
+// The Mixer view: four channel strips into Master, and the Mic strip, each with a dB scale, two
+// dotted meters, a fader, a readout and a mute + feature button.
+
+import { Theme, Px, Icon, Tape, Btn, SpeakerIcon } from "common.slint";
+
+export struct StripData {
+    name: string,
+    // Cable or role under the name ("CABLE-A", "Output", the virtual mic's name).
+    sub: string,
+    // Line under it: "No apps yet", the output device, the microphone.
+    note: string,
+    // 0..3 channels, 4 Master, 5 Mic: picks the colour and look.
+    kind: int,
+    volume: float, // 0..1.5
+    muted: bool,
+    readout: string, // "−14.0 dB"
+    level-l: float, // meters, 0..1
+    level-r: float,
+    peak-l: float,
+    peak-r: float,
+    feature-k: string, // "EQ", "Limit", "Chain"
+    feature-v: string, // "Off", "0.0 dB", "4 of 5 on"
+    feature-open: bool, // the EQ drawer for this strip is open
+    feature-static: bool, // a readout, not a button (Master's limiter)
+}
+
+/// A dotted vertical meter: 3px segments with 2px gaps, lit from the bottom in green, then
+/// yellow above 70 % and red above 85 %, with a 2px peak-hold line. Segments sit on whole pixels.
+component VMeter inherits Rectangle {
+    in property <float> level;
+    in property <float> peak;
+    in property <bool> single-color;
+    property <float> sc: Px.scale;
+    property <float> ay-p: self.absolute-position.y / 1px * sc;
+    property <float> h-p: self.height / 1px * sc;
+    property <float> seg-p: max(1, round(3 * sc));
+    property <float> gap-p: max(1, round(2 * sc));
+    property <int> count: floor((h-p + gap-p) / (seg-p + gap-p));
+    property <int> lit: round(level * count);
+    width: 8px;
+    for i in count: Rectangle {
+        // Segment i counted from the bottom.
+        property <float> bottom-p: round(ay-p + h-p - i * (seg-p + gap-p));
+        y: (bottom-p - seg-p - ay-p) / sc * 1px;
+        height: seg-p / sc * 1px;
+        border-radius: 1px;
+        background: i >= lit ? Theme.seg-off
+            : single-color ? Theme.ok
+            : i >= count * 0.85 ? Theme.hot
+            : i >= count * 0.7 ? Theme.warn
+            : Theme.ok;
+    }
+    if peak > 0: Rectangle {
+        y: Px.align(root.height * (1 - peak), root.absolute-position.y);
+        height: Px.align(2px, 0);
+        background: Theme.text.with-alpha(0.7);
+    }
+}
+
+/// Vertical fader: groove, colour fill, unity mark and cap, as in the old mixer. Drag, click,
+/// scroll or use the arrow keys; double-click resets to 100 %. Only dragging snaps to 100 %.
+component VFader inherits Rectangle {
+    in property <float> value; // 0..1.5
+    in property <color> tint;
+    in property <string> label;
+    callback changed(float);
+    property <float> top: 1.5;
+    property <length> inset: 7px;
+    property <length> travel: self.height - 2 * inset;
+    property <float> dragged: value;
+    out property <bool> dragging: ta.pressed;
+    out property <float> shown: dragging ? dragged : value;
+    property <length> ax: self.absolute-position.x;
+    property <length> ay: self.absolute-position.y;
+    // y of the cap's centre for a value.
+    property <length> cap-y: inset + travel * (1 - shown / top);
+    width: 28px;
+    accessible-role: slider;
+    accessible-label: label + " volume";
+    accessible-value: round(shown * 100);
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 150;
+    accessible-value-step: 2;
+    accessible-action-increment => { set(value + 0.02); }
+    accessible-action-decrement => { set(value - 0.02); }
+    accessible-action-set-value(v) => { set(v.to-float() / 100); }
+
+    function set(v: float) {
+        root.dragged = max(0, min(root.top, v));
+        root.changed(root.dragged);
+    }
+    function from-y(y: length) {
+        let v = max(0, min(1, 1 - (y - inset) / travel)) * root.top;
+        set(abs(v - 1) < 0.03 ? 1 : v);
+    }
+
+    // Groove.
+    Rectangle {
+        x: Px.align(12px, ax);
+        width: Px.align(16px, ax) - self.x;
+        y: Px.align(inset, ay);
+        height: Px.align(root.height - inset, ay) - self.y;
+        background: Theme.well;
+        border-radius: 2px;
+    }
+    // Unity (100 %) mark.
+    Rectangle {
+        x: Px.align(7px, ax);
+        width: Px.align(21px, ax) - self.x;
+        y: Px.align(inset + travel * (1 - 1 / root.top), ay);
+        height: Px.hair();
+        background: Theme.line-strong;
+    }
+    // Fill, from the bottom up to the cap.
+    Rectangle {
+        x: Px.align(12px, ax);
+        width: Px.align(16px, ax) - self.x;
+        y: Px.align(cap-y, ay);
+        height: Px.align(root.height - inset, ay) - self.y;
+        background: tint;
+        border-radius: 2px;
+    }
+    // Cap.
+    cap := Rectangle {
+        x: 0;
+        width: root.width;
+        y: Px.align(cap-y - 7px, ay);
+        height: Px.align(cap-y + 7px, ay) - self.y;
+        border-radius: 4px;
+        border-width: Px.hair();
+        border-color: Theme.line-strong;
+        background: @linear-gradient(180deg, Theme.raised 0%, Theme.panel 100%);
+        drop-shadow-blur: 4px;
+        drop-shadow-offset-y: 1px;
+        drop-shadow-color: #00000033;
+        Rectangle {
+            x: Px.align(5px, root.ax);
+            width: Px.align(root.width - 5px, root.ax) - self.x;
+            y: Px.align((cap.height - 2px) / 2, root.ay + cap.y);
+            height: Px.align((cap.height + 2px) / 2, root.ay + cap.y) - self.y;
+            background: tint;
+            border-radius: 1px;
+        }
+    }
+    // Keyboard focus underneath; the TouchArea on top gets the pointer and the wheel.
+    focus := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.UpArrow { root.set(root.value + 0.02); return accept; }
+            if e.text == Key.DownArrow { root.set(root.value - 0.02); return accept; }
+            if e.text == Key.PageUp { root.set(root.value + 0.1); return accept; }
+            if e.text == Key.PageDown { root.set(root.value - 0.1); return accept; }
+            if e.text == Key.Home { root.set(1); return accept; }
+            reject
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: ns-resize;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                focus.focus();
+                root.from-y(self.mouse-y);
+            }
+        }
+        moved => {
+            if self.pressed { root.from-y(self.mouse-y); }
+        }
+        double-clicked => { root.set(1); }
+        scroll-event(e) => {
+            root.set(root.value + (e.delta-y > 0 ? 0.02 : -0.02));
+            accept
+        }
+    }
+}
+
+/// "EQ  Off": a faint label and a value, in a button (or a plain readout for Master's limiter).
+component FeatureButton inherits Btn {
+    in property <string> k;
+    in property <string> v;
+    in property <bool> open;
+    in property <bool> static;
+    in property <color> tint;
+    label: k + " " + v;
+    border-color: open ? tint : self.hovered && !static ? Theme.line-strong : Theme.line;
+    background: open ? tint.mix(Theme.raised, 0.14) : Theme.raised;
+    HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        spacing: 5px;
+        Text {
+            text: root.k;
+            color: Theme.faint;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.v;
+            color: Theme.text;
+            font-size: 12px;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+    }
+}
+
+/// One strip: tape and cable, a note line, the dB scale with meters and fader, the readout, and
+/// mute + feature buttons.
+export component Strip inherits Rectangle {
+    in property <StripData> data;
+    in property <length> fader-height: 190px;
+    callback volume(float);
+    callback mute;
+    callback feature;
+    property <color> c: data.kind == 5 ? Theme.mic : Theme.row-color(data.kind);
+    background: data.kind == 4 ? Theme.raised.mix(Theme.panel, 0.55)
+        : data.kind == 5 ? Theme.mic.mix(Theme.panel, 0.06)
+        : Theme.panel;
+    border-width: Px.hair();
+    border-color: data.kind == 4 ? Theme.line-strong
+        : data.kind == 5 ? Theme.mic.mix(Theme.line, 0.35)
+        : Theme.line;
+    border-radius: 8px;
+
+    VerticalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 12px;
+        padding-bottom: 10px;
+        spacing: 10px;
+        // Tape and cable.
+        HorizontalLayout {
+            spacing: 8px;
+            height: 22px;
+            Tape {
+                label: root.data.name;
+                tint: root.c;
+                ink: root.data.kind == 4 ? Theme.master-ink : Theme.tape-ink;
+                height: 22px;
+                font-size: 15px;
+                pad: 8px;
+                opacity: root.data.muted ? 0.45 : 1;
+            }
+            Text {
+                text: root.data.sub;
+                color: Theme.faint;
+                font-family: Theme.font-num;
+                font-size: 11px;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+        }
+        // Apps or device.
+        Text {
+            height: 22px;
+            text: root.data.note;
+            color: Theme.faint;
+            font-size: 12px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        // dB scale, meters, fader.
+        Rectangle {
+            height: root.fader-height;
+            opacity: root.data.muted ? 0.45 : 1;
+            // Scale: 0 to −60 dB, lined up with the meters (7px in at each end, like the fader).
+            for d[i] in [0, -12, -24, -36, -48, -60]: Text {
+                x: 0;
+                width: 22px;
+                y: 7px + (parent.height - 14px) * (-d / 60) - 5px;
+                height: 10px;
+                text: d == 0 ? "0" : "−" + (-d);
+                color: Theme.faint;
+                font-family: Theme.font-num;
+                font-size: 10px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+            // Meters and fader, centred in the rest of the strip.
+            HorizontalLayout {
+                x: 22px;
+                width: parent.width - 22px;
+                alignment: center;
+                spacing: 10px;
+                HorizontalLayout {
+                    spacing: 3px;
+                    padding-top: 7px;
+                    padding-bottom: 7px;
+                    VMeter {
+                        level: root.data.muted ? 0 : root.data.level-l;
+                        peak: root.data.muted ? 0 : root.data.peak-l;
+                        single-color: false;
+                    }
+                    VMeter {
+                        level: root.data.muted ? 0 : root.data.level-r;
+                        peak: root.data.muted ? 0 : root.data.peak-r;
+                        single-color: false;
+                    }
+                }
+                fader := VFader {
+                    value: root.data.volume;
+                    tint: root.c;
+                    label: root.data.name;
+                    changed(v) => { root.volume(v); }
+                }
+            }
+        }
+        // Readout.
+        Text {
+            text: root.data.muted ? "Muted" : root.data.readout;
+            color: root.data.muted ? Theme.hot : Theme.text;
+            font-family: Theme.font-num;
+            font-size: 15px;
+            font-weight: 500;
+            horizontal-alignment: center;
+        }
+        // Mute and the feature button.
+        HorizontalLayout {
+            spacing: 6px;
+            height: 28px;
+            Btn {
+                width: 28px;
+                on: root.data.muted;
+                label: (root.data.muted ? "Unmute " : "Mute ") + root.data.name;
+                clicked => { root.mute(); }
+                SpeakerIcon {
+                    x: Px.align((parent.width - 15px) / 2, parent.absolute-position.x);
+                    y: Px.align((parent.height - 15px) / 2, parent.absolute-position.y);
+                    width: 15px;
+                    height: 15px;
+                    off: root.data.muted;
+                    stroke: parent.ink;
+                }
+            }
+            FeatureButton {
+                k: root.data.feature-k;
+                v: root.data.feature-v;
+                open: root.data.feature-open;
+                static: root.data.feature-static;
+                tint: root.c;
+                clicked => { if !root.data.feature-static { root.feature(); } }
+            }
+        }
+    }
+}
+
+/// "Playback" and similar small caps labels above a group of strips.
+component GroupLabel inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> note;
+    spacing: 8px;
+    height: 16px;
+    Text {
+        text: root.title.to-uppercase();
+        color: Theme.faint;
+        font-family: Theme.font-label;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.06 * 12px;
+        vertical-alignment: center;
+    }
+    Text {
+        text: root.note;
+        color: Theme.faint;
+        font-size: 11px;
+        vertical-alignment: center;
+        overflow: elide;
+        horizontal-stretch: 1;
+    }
+}
+
+export component MixerView inherits VerticalLayout {
+    in property <[StripData]> channels; // Game, Chat, Media, Aux
+    in property <StripData> master;
+    in property <StripData> mic;
+    in property <string> buffer: "–";
+    in property <length> fader-height: 190px;
+    // Strip indices: 0..3 channels, 4 Master, 5 Mic.
+    callback volume(int, float);
+    callback mute(int);
+    callback feature(int);
+    callback buffer-clicked;
+    spacing: 16px;
+
+    // Title, explanation, Buffer pill.
+    HorizontalLayout {
+        VerticalLayout {
+            spacing: 2px;
+            Text {
+                text: "Mixer";
+                color: Theme.text;
+                font-size: 20px;
+                font-weight: 600;
+            }
+            Text {
+                text: "System sounds and apps you haven't placed play in Game.";
+                color: Theme.muted;
+                font-size: 13px;
+            }
+        }
+        Rectangle { }
+        VerticalLayout {
+            alignment: start;
+            Rectangle {
+                width: buffer-row.preferred-width + 20px;
+                height: 24px;
+                border-radius: 12px;
+                border-width: Px.hair();
+                border-color: Theme.line;
+                background: Theme.panel;
+                buffer-row := HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 6px;
+                    Text { text: "Buffer"; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
+                    Text { text: root.buffer; color: Theme.text; font-family: Theme.font-num; font-size: 12px; font-weight: 500; vertical-alignment: center; }
+                }
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.buffer-clicked(); }
+                }
+                accessible-role: button;
+                accessible-label: "Buffer " + root.buffer + ". Measure the full delay";
+                accessible-action-default => { root.buffer-clicked(); }
+            }
+        }
+    }
+
+    // Playback (four channels into Master) and Your voice (Mic), side by side: 5 : 1.15.
+    groups := Rectangle {
+        property <length> gap: 20px;
+        property <length> playback-w: (self.width - gap) * 5 / 6.15;
+        property <length> voice-w: self.width - gap - playback-w;
+        // Five equal strips: four channels, a 6px arrow and Master, 10px apart.
+        property <length> strip-w: (playback-w - 6px - 50px) / 5;
+        height: max(playback.preferred-height, voice.preferred-height);
+        playback := VerticalLayout {
+            x: 0;
+            width: groups.playback-w;
+            spacing: 8px;
+            GroupLabel { title: "Playback"; note: "Game, Chat, Media and Aux mix into Master, then your headphones"; }
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: stretch;
+                for s[i] in root.channels: Strip {
+                    width: groups.strip-w;
+                    data: s;
+                    fader-height: root.fader-height;
+                    volume(v) => { root.volume(i, v); }
+                    mute => { root.mute(i); }
+                    feature => { root.feature(i); }
+                }
+                // Into Master.
+                Rectangle {
+                    width: 6px;
+                    horizontal-stretch: 0;
+                    Icon {
+                        y: (parent.height - 10px) / 2;
+                        width: 6px;
+                        height: 10px;
+                        size: 10;
+                        viewbox-width: 6;
+                        stroke: Theme.line-strong;
+                        stroke-width: 1.5px;
+                        commands: "M1 1 L5 5 L1 9";
+                    }
+                }
+                Strip {
+                    width: groups.strip-w;
+                    data: root.master;
+                    fader-height: root.fader-height;
+                    volume(v) => { root.volume(4, v); }
+                    mute => { root.mute(4); }
+                    feature => { root.feature(4); }
+                }
+            }
+        }
+        // Your voice: a divider, then the Mic strip.
+        Rectangle {
+            x: groups.playback-w + groups.gap;
+            width: Px.hair();
+            height: parent.height;
+            background: Theme.line;
+        }
+        voice := VerticalLayout {
+            x: groups.playback-w + groups.gap * 2;
+            width: groups.voice-w - groups.gap;
+            spacing: 8px;
+            alignment: start;
+            GroupLabel { title: "Your voice"; note: "Sent to apps as the virtual mic"; }
+            Strip {
+                data: root.mic;
+                fader-height: root.fader-height;
+                volume(v) => { root.volume(5, v); }
+                mute => { root.mute(5); }
+                feature => { root.feature(5); }
+            }
+        }
+    }
+}

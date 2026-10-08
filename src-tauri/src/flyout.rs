@@ -18,7 +18,7 @@ use crate::audio::device::{self, Flow};
 use crate::config::{CHANNEL_COUNT, CHANNEL_NAMES};
 use crate::{audio, notify_config_changed, AppState};
 
-slint::include_modules!();
+use crate::ui::{Device, FlyoutWindow, Px, Row, Theme};
 
 /// Width of the flyout, in logical pixels; its height follows its content.
 const WIDTH: f32 = 320.0;
@@ -462,16 +462,16 @@ fn update_meters(app: &AppHandle) {
 }
 
 /// dBFS to a meter fraction: -60 dB and below is empty, 0 dB full.
-fn meter_fraction(db: f32) -> f32 {
+pub(crate) fn meter_fraction(db: f32) -> f32 {
     ((db + 60.0) / 60.0).clamp(0.0, 1.0)
 }
 
-fn device_missing(reason: &str) -> bool {
+pub(crate) fn device_missing(reason: &str) -> bool {
     reason.to_lowercase().contains("no physical audio device")
 }
 
 /// "Speakers (5- soundcore Select 4 Go )" -> "soundcore Select 4 Go", like the main window.
-fn short_name(name: &str) -> String {
+pub(crate) fn short_name(name: &str) -> String {
     let trimmed = name.trim_end();
     if let (Some(open), true) = (trimmed.find('('), trimmed.ends_with(')')) {
         let inner = trimmed[open + 1..trimmed.len() - 1].trim();

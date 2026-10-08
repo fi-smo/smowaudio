@@ -5,6 +5,11 @@ mod config;
 mod dsp;
 mod engine;
 mod flyout;
+mod mainwin;
+/// The native (Slint) windows, compiled from ui-slint/app.slint by build.rs.
+mod ui {
+    slint::include_modules!();
+}
 mod hotkeys;
 mod icons;
 mod osd;
@@ -865,6 +870,9 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if args.iter().any(|a| a == "--flyout") {
                 toggle_flyout_at_tray(app);
+            } else if args.iter().any(|a| a == "--native-window") {
+                // The Slint main window, while it's being ported (see mainwin.rs).
+                mainwin::open(app);
             } else {
                 open_window(app);
             }

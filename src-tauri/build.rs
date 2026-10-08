@@ -1,6 +1,6 @@
 fn main() {
-    // The tray flyout is a native Slint window; everything else is the Tauri WebView UI in ../ui.
-    slint_build::compile("ui-slint/flyout.slint").expect("compile the flyout");
+    // Native Slint windows (ui-slint/app.slint): the tray flyout, and the main window being ported.
+    slint_build::compile("ui-slint/app.slint").expect("compile the Slint UI");
     tauri_build::build();
     // tauri-build links its Windows resources (icon, and the manifest that enables Common Controls
     // v6) into the app only. Examples such as the flyout preview need the manifest too, or Windows
