@@ -3,6 +3,9 @@
 Every release needs a section here: the release build takes its notes from it, and the app shows
 them under Settings → Updates.
 
+## 0.9.4 — 2026-10-08
+- The tray flyout has a Master volume slider with its own mute and level meter
+
 ## 0.9.3 — 2026-10-07
 - Apps that only pick their output when they start, like Apple Music, show "Reopen to move" until they play on their new channel
 - Store apps' helper processes show the app's own name (Apple Music instead of AMPLibraryAgent)
