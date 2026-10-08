@@ -1,0 +1,720 @@
+// Tray flyout: quick channel volumes, the output device and mic controls. A native (Slint) version
+// of the old WebView flyout, with the same sizes and colours as ui/style.css.
+
+// ---------- theme ----------
+export global Theme {
+    in property <bool> dark: true;
+
+    out property <color> window: dark ? #16181d : #f6f7f9;
+    out property <color> panel: dark ? #1d2027 : #ffffff;
+    out property <color> raised: dark ? #262a33 : #eef0f4;
+    out property <color> well: dark ? #111318 : #dfe3e9;
+    out property <color> line: dark ? #2b303a : #d5d9e0;
+    out property <color> line-strong: dark ? #3d4452 : #b7bdc8;
+    out property <color> text: dark ? #e9e6df : #1a1d23;
+    out property <color> muted: dark ? #a1a7b2 : #586070;
+    out property <color> faint: dark ? #6d7481 : #868d99;
+    out property <color> game: dark ? #f0a23b : #b86e0c;
+    out property <color> chat: dark ? #4cc4a0 : #13896d;
+    out property <color> media: dark ? #ea6a92 : #bd3a66;
+    out property <color> aux: dark ? #949bff : #5059cf;
+    out property <color> mic: dark ? #6cc0f2 : #1b7fb8;
+    out property <color> master: dark ? #d9d5cc : #3a404c;
+    out property <color> tape-ink: #14161a;
+    // Master's tape is dark in the light theme, so its label needs light ink there.
+    out property <color> master-ink: dark ? tape-ink : window;
+    out property <color> ok: dark ? #58c47e : #2d9a5a;
+    out property <color> warn: dark ? #e6c14a : #c29310;
+    out property <color> hot: dark ? #ec5b56 : #cf423c;
+    out property <color> seg-off: dark ? #262a32 : #d3d8df;
+
+    out property <string> font-ui: "Segoe UI Variable Text";
+    out property <string> font-label: "Bahnschrift";
+    out property <string> font-num: "Cascadia Mono";
+
+    // Row colours by index: Game, Chat, Media, Aux, Master.
+    public pure function row-color(i: int) -> color {
+        i == 0 ? game : i == 1 ? chat : i == 2 ? media : i == 3 ? aux : master
+    }
+}
+
+// ---------- data ----------
+export struct Row {
+    name: string,
+    volume: float, // 0..1.5
+    muted: bool,
+    level: float, // meter, 0..1
+    peak: float, // peak hold, 0..1 (0 = none)
+}
+
+export struct Device {
+    id: string, // "" = Automatic
+    label: string,
+    title: string,
+    selected: bool,
+}
+
+// ---------- building blocks ----------
+component Icon inherits Path {
+    in property <float> size: 16;
+    viewbox-width: size;
+    viewbox-height: size;
+    fill: transparent;
+    stroke-width: 1.4px;
+    stroke-line-cap: round;
+    stroke-line-join: round;
+}
+
+/// A channel label like the mixer's "tapes".
+component Tape inherits Rectangle {
+    in property <string> label;
+    in property <color> tint;
+    in property <color> ink: Theme.tape-ink;
+    background: tint;
+    border-radius: 3px;
+    height: 19px;
+    width: t.preferred-width + 12px;
+    t := Text {
+        text: label.to-uppercase();
+        color: ink;
+        font-family: Theme.font-label;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.06 * 13px;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+        y: 1px;
+        height: parent.height;
+    }
+}
+
+/// A small bordered button; `pressed-style` gives the "on" look (red for mute, blue for listen).
+component Btn inherits Rectangle {
+    in property <bool> on;
+    in property <color> on-color: Theme.hot;
+    in property <length> radius: 6px;
+    in property <string> label;
+    callback clicked;
+    accessible-role: button;
+    accessible-label: label;
+    accessible-checked: on;
+    accessible-action-default => { root.clicked(); }
+    out property <bool> hovered: ta.has-hover;
+    out property <color> ink: on ? on-color : Theme.text;
+    border-radius: radius;
+    border-width: 1px;
+    border-color: on ? on-color : ta.has-hover ? Theme.line-strong : Theme.line;
+    background: on ? on-color.mix(Theme.panel, 0.16) : Theme.raised;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    @children
+}
+
+/// 30 LED-style segments, like the mixer's meters, with a peak-hold mark.
+component Meter inherits Rectangle {
+    in property <float> level; // 0..1
+    in property <float> peak; // 0..1
+    in property <bool> single-color;
+    property <int> count: 30;
+    property <int> lit: round(level * count);
+    property <int> peak-at: round(peak * count) - 1;
+    height: 6px;
+    HorizontalLayout {
+        spacing: 2px;
+        for i in count: Rectangle {
+            // The peak mark is a little taller than the segments around it.
+            Rectangle {
+                y: i == peak-at ? 0 : 1px;
+                height: i == peak-at ? 6px : 4px;
+                border-radius: 1px;
+                background: i == peak-at ? Theme.text.with-alpha(0.7)
+                    : i >= lit ? Theme.seg-off
+                    : single-color ? Theme.ok
+                    : i >= count * 0.85 ? Theme.hot
+                    : i >= count * 0.7 ? Theme.warn
+                    : Theme.ok;
+            }
+        }
+    }
+}
+
+/// Horizontal fader: same groove, colour fill, unity mark and cap as the mixer's. Drag, click,
+/// scroll or use the arrow keys; double-click resets to 100 %.
+component Fader inherits Rectangle {
+    in property <float> value; // 0..1.5, from the app
+    in property <color> tint;
+    callback changed(float);
+    property <float> top: 1.5;
+    property <length> inset: 6px;
+    property <length> track: self.width - 2 * inset;
+    property <float> dragged: value;
+    out property <bool> dragging: ta.pressed;
+    out property <float> shown: dragging ? dragged : value;
+    in property <string> label;
+    height: 18px;
+    accessible-role: slider;
+    accessible-label: label + " volume";
+    accessible-value: round(shown * 100);
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 150;
+    accessible-value-step: 2;
+    accessible-action-increment => { set(value + 0.02); }
+    accessible-action-decrement => { set(value - 0.02); }
+    accessible-action-set-value(v) => { set(v.to-float() / 100); }
+
+    function set(v: float) {
+        // Snap to unity, like the mixer.
+        let clamped = max(0, min(root.top, v));
+        root.dragged = abs(clamped - 1) < 0.03 ? 1 : clamped;
+        root.changed(root.dragged);
+    }
+    function from-x(x: length) {
+        set(max(0, min(1, (x - inset - 3px) / (track - 6px))) * root.top);
+    }
+
+    // Groove.
+    Rectangle {
+        x: inset;
+        width: track;
+        y: (parent.height - 4px) / 2;
+        height: 4px;
+        background: Theme.well;
+        border-width: 1px;
+        border-color: Theme.line;
+        border-radius: 2px;
+    }
+    // Unity (100 %) mark.
+    Rectangle {
+        x: inset + track * (1 / root.top);
+        width: 1px;
+        y: 2px;
+        height: parent.height - 4px;
+        background: Theme.line-strong;
+    }
+    // Fill.
+    Rectangle {
+        x: inset;
+        width: track * (shown / root.top);
+        y: (parent.height - 4px) / 2;
+        height: 4px;
+        background: tint.with-alpha(0.9);
+        border-radius: 2px;
+    }
+    // Cap.
+    Rectangle {
+        x: inset + track * (shown / root.top) - 6px;
+        width: 12px;
+        height: 18px;
+        border-radius: 4px;
+        border-width: 1px;
+        border-color: Theme.line-strong;
+        background: @linear-gradient(90deg, Theme.raised 0%, Theme.panel 100%);
+        drop-shadow-blur: 4px;
+        drop-shadow-offset-y: 1px;
+        drop-shadow-color: #0000002e;
+        Rectangle {
+            x: (parent.width - 2px) / 2;
+            width: 2px;
+            y: 4px;
+            height: parent.height - 8px;
+            background: tint;
+            border-radius: 1px;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: ew-resize;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                focus.focus();
+                root.from-x(self.mouse-x);
+            }
+        }
+        moved => {
+            if self.pressed { root.from-x(self.mouse-x); }
+        }
+        double-clicked => { root.set(1); }
+        scroll-event(e) => {
+            root.set(root.value + (e.delta-y > 0 ? 0.02 : -0.02));
+            accept
+        }
+    }
+    focus := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.RightArrow || e.text == Key.UpArrow { root.set(root.value + 0.02); return accept; }
+            if e.text == Key.LeftArrow || e.text == Key.DownArrow { root.set(root.value - 0.02); return accept; }
+            if e.text == Key.PageUp { root.set(root.value + 0.1); return accept; }
+            if e.text == Key.PageDown { root.set(root.value - 0.1); return accept; }
+            if e.text == Key.Home { root.set(1); return accept; }
+            reject
+        }
+    }
+}
+
+component SpeakerIcon inherits Icon {
+    in property <bool> off;
+    commands: off ? "M2.5 6h2.5l3.5-3v10l-3.5-3h-2.5z M11 6l3.5 4M14.5 6 11 10"
+        : "M2.5 6h2.5l3.5-3v10l-3.5-3h-2.5z M11 5.5a3.5 3.5 0 0 1 0 5M12.8 3.5a6.2 6.2 0 0 1 0 9";
+}
+
+component HeadphonesIcon inherits Icon {
+    commands: "M2.5 10V8a5.5 5.5 0 0 1 11 0v2 M3 9.5h1a1 1 0 0 1 1 1v2.5a1 1 0 0 1 -1 1h-1a1 1 0 0 1 -1 -1v-2.5a1 1 0 0 1 1 -1z M12 9.5h1a1 1 0 0 1 1 1v2.5a1 1 0 0 1 -1 1h-1a1 1 0 0 1 -1 -1v-2.5a1 1 0 0 1 1 -1z";
+}
+
+/// One channel (or Master): label, fader over its meter, percentage, mute.
+component ChannelRow inherits Rectangle {
+    in property <Row> data;
+    in property <int> index;
+    in property <bool> divider;
+    in property <bool> strong-divider;
+    callback volume(float);
+    callback mute;
+    property <color> c: Theme.row-color(index);
+    height: 41px;
+    // Divider above every row but the first; Master's is stronger.
+    if divider: Rectangle {
+        y: 0;
+        height: 1px;
+        background: strong-divider ? Theme.line-strong : Theme.line;
+    }
+    // Columns as in the web version: 58px label, the fader taking the rest, 38px percentage, 28px
+    // mute, 10px apart, inside 10px of padding.
+    property <length> pad: 10px;
+    property <length> gap: 10px;
+    property <length> fader-x: pad + 58px + gap;
+    property <length> fader-w: self.width - fader-x - gap - 38px - gap - 28px - pad;
+    Tape {
+        x: pad;
+        y: (parent.height - self.height) / 2;
+        label: data.name;
+        tint: c;
+        ink: index == 4 ? Theme.master-ink : Theme.tape-ink;
+        opacity: data.muted ? 0.4 : 1;
+    }
+    fader := Fader {
+        x: fader-x;
+        y: 9px;
+        width: fader-w;
+        label: data.name;
+        value: data.volume;
+        tint: c;
+        opacity: data.muted ? 0.4 : 1;
+        changed(v) => { root.volume(v); }
+    }
+    // The meter lines up with the groove, which is inset by half the cap.
+    Meter {
+        x: fader-x + 6px;
+        y: 9px + 18px + 2px;
+        width: fader-w - 12px;
+        level: data.muted ? 0 : data.level;
+        peak: data.muted ? 0 : data.peak;
+    }
+    Text {
+        x: fader-x + fader-w + gap;
+        width: 38px;
+        text: data.muted ? "Off" : round(fader.shown * 100) + "%";
+        color: data.muted ? Theme.hot : Theme.text;
+        font-family: Theme.font-num;
+        font-size: 12px;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+    Btn {
+        x: parent.width - pad - 28px;
+        y: (parent.height - 24px) / 2;
+        width: 28px;
+        height: 24px;
+        on: data.muted;
+        label: (data.muted ? "Unmute " : "Mute ") + data.name;
+        clicked => { root.mute(); }
+        SpeakerIcon {
+            x: (parent.width - 15px) / 2;
+            y: (parent.height - 15px) / 2;
+            width: 15px;
+            height: 15px;
+            off: data.muted;
+            stroke: parent.ink;
+        }
+    }
+}
+
+// ---------- the flyout ----------
+export component FlyoutWindow inherits Window {
+    in property <[Row]> rows;
+    in property <[Device]> devices;
+    in property <string> output-label: "Automatic";
+    in property <string> status-text: "Starting";
+    in property <bool> status-warn;
+    in property <string> mic-text: "…";
+    in property <bool> mic-failed;
+    in property <float> mic-level;
+    in property <bool> mic-muted;
+    in property <bool> mic-listen;
+    in-out property <bool> outputs-open;
+    // The window's height in logical pixels, for placing it before it appears.
+    out property <float> wanted-height: content.preferred-height / 1px;
+
+    callback set-volume(int, float);
+    callback toggle-mute(int);
+    callback choose-output(string);
+    callback toggle-mic-mute;
+    callback toggle-mic-listen;
+    callback open-main(string);
+    callback dismiss;
+
+    title: "Smowaudio";
+    no-frame: true;
+    always-on-top: true;
+    width: 320px;
+    height: content.preferred-height;
+    background: Theme.window;
+    default-font-family: Theme.font-ui;
+    default-font-size: 14px;
+
+    forward-focus: keys;
+    keys := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Escape {
+                if root.outputs-open { root.outputs-open = false; } else { root.dismiss(); }
+                return accept;
+            }
+            reject
+        }
+    }
+
+    // The window itself is rounded by Windows; this is its 1px border.
+    Rectangle {
+        border-width: 1px;
+        border-color: Theme.line-strong;
+        border-radius: 8px;
+    }
+
+    content := VerticalLayout {
+        padding: 12px;
+        spacing: 10px;
+
+        // Header: mark, name, status pill.
+        HorizontalLayout {
+            spacing: 8px;
+            height: 20px;
+            Rectangle {
+                width: 18px;
+                // Four bars in the channel colours, like the app icon.
+                for bar[i] in [0.6, 1.0, 0.75, 0.45]: Rectangle {
+                    x: i * 5px;
+                    width: 3px;
+                    height: 16px * bar;
+                    y: 2px + 16px * (1 - bar);
+                    border-radius: 1px;
+                    background: Theme.row-color(i);
+                }
+            }
+            Text {
+                text: "Smowaudio";
+                font-weight: 600;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+            Rectangle { }
+            status := Rectangle {
+                property <color> c: root.status-warn ? Theme.warn : Theme.ok;
+                width: min(status-row.preferred-width + 16px, 180px);
+                height: 18px;
+                y: 1px;
+                border-radius: 9px;
+                border-width: 1px;
+                border-color: root.status-warn ? Theme.warn.mix(Theme.line, 0.45) : Theme.line;
+                status-row := HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 6px;
+                    alignment: center;
+                    Rectangle {
+                        width: 6px;
+                        height: 6px;
+                        y: (parent.height - 6px) / 2;
+                        border-radius: 3px;
+                        background: status.c;
+                    }
+                    Text {
+                        text: root.status-text;
+                        color: status.c;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.open-main("settings:devices"); }
+                }
+                accessible-role: button;
+                accessible-label: "Streams: " + root.status-text;
+                accessible-action-default => { root.open-main("settings:devices"); }
+            }
+        }
+
+        // Output device picker.
+        output := Rectangle {
+            height: 31px;
+            background: Theme.panel;
+            border-width: 1px;
+            border-color: Theme.line;
+            border-radius: 7px;
+            Rectangle {
+                x: 3px;
+                y: 3px;
+                width: parent.width - 6px;
+                height: parent.height - 6px;
+                border-radius: 5px;
+                background: out-ta.has-hover ? Theme.raised : transparent;
+                HorizontalLayout {
+                    padding-left: 7px;
+                    padding-right: 7px;
+                    spacing: 8px;
+                    HeadphonesIcon {
+                        width: 14px;
+                        height: 14px;
+                        y: (parent.height - 14px) / 2;
+                        stroke: Theme.muted;
+                    }
+                    Text {
+                        text: "Output";
+                        color: Theme.muted;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.output-label;
+                        color: Theme.text;
+                        font-size: 13px;
+                        font-weight: 500;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    Icon {
+                        size: 12;
+                        width: 12px;
+                        height: 12px;
+                        y: (parent.height - 12px) / 2;
+                        stroke: Theme.muted;
+                        stroke-width: 1.6px;
+                        commands: root.outputs-open ? "M3 7.5 6 4.5 9 7.5" : "M3 4.5 6 7.5 9 4.5";
+                    }
+                }
+                out-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.outputs-open = !root.outputs-open; }
+                }
+                accessible-role: button;
+                accessible-label: "Output: " + root.output-label;
+                accessible-expandable: true;
+                accessible-expanded: root.outputs-open;
+                accessible-action-default => { root.outputs-open = !root.outputs-open; }
+                accessible-action-expand => { root.outputs-open = true; }
+            }
+        }
+
+        // Channels and Master.
+        Rectangle {
+            background: Theme.panel;
+            border-width: 1px;
+            border-color: Theme.line;
+            border-radius: 8px;
+            VerticalLayout {
+                padding: 1px;
+                for row[i] in root.rows: ChannelRow {
+                    data: row;
+                    index: i;
+                    divider: i > 0;
+                    strong-divider: i == 4;
+                    volume(v) => { root.set-volume(i, v); }
+                    mute => { root.toggle-mute(i); }
+                }
+            }
+        }
+
+        // Mic: state and level, then Mute and Listen.
+        Rectangle {
+            background: Theme.panel;
+            border-width: 1px;
+            border-color: root.mic-failed ? Theme.warn.mix(Theme.line, 0.45) : Theme.line;
+            border-radius: 8px;
+            VerticalLayout {
+                padding: 10px;
+                padding-top: 9px;
+                spacing: 8px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    Rectangle {
+                        width: 58px;
+                        Tape { x: 0; label: "Mic"; tint: Theme.mic; }
+                    }
+                    VerticalLayout {
+                        spacing: 4px;
+                        alignment: center;
+                        Text {
+                            text: root.mic-text;
+                            color: root.mic-failed ? Theme.warn : Theme.muted;
+                            font-size: 11px;
+                            overflow: elide;
+                        }
+                        Meter {
+                            level: root.mic-level;
+                            single-color: true;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 26px;
+                    mic-mute := Btn {
+                        on: root.mic-muted;
+                        label: root.mic-muted ? "Unmute the mic" : "Mute the mic";
+                        clicked => { root.toggle-mic-mute(); }
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 6px;
+                            Icon {
+                                width: 14px;
+                                height: 14px;
+                                y: (parent.height - 14px) / 2;
+                                stroke: mic-mute.ink;
+                                commands: "M7 1.5h2a1.5 1.5 0 0 1 1.5 1.5v5a1.5 1.5 0 0 1 -1.5 1.5h-2a1.5 1.5 0 0 1 -1.5 -1.5v-5a1.5 1.5 0 0 1 1.5 -1.5z M3 7.5a5 5 0 0 0 10 0M8 12.5V15";
+                            }
+                            Text {
+                                text: "Mute";
+                                font-size: 12px;
+                                color: mic-mute.ink;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    mic-listen := Btn {
+                        on: root.mic-listen;
+                        on-color: Theme.mic;
+                        label: "Listen to the mic";
+                        clicked => { root.toggle-mic-listen(); }
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 6px;
+                            HeadphonesIcon {
+                                width: 14px;
+                                height: 14px;
+                                y: (parent.height - 14px) / 2;
+                                stroke: mic-listen.ink;
+                            }
+                            Text {
+                                text: "Listen";
+                                font-size: 12px;
+                                color: mic-listen.ink;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Open mixer, Settings.
+        HorizontalLayout {
+            spacing: 8px;
+            height: 32px;
+            Btn {
+                label: "Open mixer";
+                clicked => { root.open-main("mixer"); }
+                Text {
+                    text: "Open mixer";
+                    font-size: 13px;
+                    font-weight: 500;
+                    color: Theme.text;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            Btn {
+                width: 32px;
+                label: "Settings";
+                clicked => { root.open-main("settings"); }
+                Icon {
+                    size: 24;
+                    x: (parent.width - 16px) / 2;
+                    y: (parent.height - 16px) / 2;
+                    width: 16px;
+                    height: 16px;
+                    stroke: Theme.text;
+                    stroke-width: 1.6px;
+                    commands: "M15 12a3 3 0 1 1 -6 0a3 3 0 1 1 6 0z M10.21 5.34L10.50 2.52L13.50 2.52L13.79 5.34L15.45 6.02L17.64 4.23L19.77 6.36L17.98 8.55L18.66 10.21L21.48 10.50L21.48 13.50L18.66 13.79L17.98 15.45L19.77 17.64L17.64 19.77L15.45 17.98L13.79 18.66L13.50 21.48L10.50 21.48L10.21 18.66L8.55 17.98L6.36 19.77L4.23 17.64L6.02 15.45L5.34 13.79L2.52 13.50L2.52 10.50L5.34 10.21L6.02 8.55L4.23 6.36L6.36 4.23L8.55 6.02Z";
+                }
+            }
+        }
+    }
+
+    // While the output list is open, a click anywhere else closes it.
+    if root.outputs-open: TouchArea {
+        clicked => { root.outputs-open = false; }
+    }
+    // The output list floats over the channel rows, so the window keeps its size and position.
+    if root.outputs-open: Rectangle {
+        x: 12px;
+        y: output.y + output.height + 4px;
+        width: root.width - 24px;
+        height: min(list.preferred-height, 232px);
+        background: Theme.panel;
+        border-width: 1px;
+        border-color: Theme.line-strong;
+        border-radius: 7px;
+        drop-shadow-blur: 28px;
+        drop-shadow-offset-y: 10px;
+        drop-shadow-color: #00000047;
+        Flickable {
+            content-height: list.preferred-height;
+            list := VerticalLayout {
+                padding: 3px;
+                spacing: 1px;
+                for d in root.devices: Rectangle {
+                    height: 27px;
+                    accessible-role: list-item;
+                    accessible-label: d.label;
+                    accessible-item-selected: d.selected;
+                    accessible-action-default => {
+                        root.outputs-open = false;
+                        root.choose-output(d.id);
+                    }
+                    border-radius: 5px;
+                    background: dev-ta.has-hover ? Theme.raised : transparent;
+                    HorizontalLayout {
+                        padding-left: 7px;
+                        padding-right: 7px;
+                        spacing: 8px;
+                        Rectangle {
+                            width: 6px;
+                            height: 6px;
+                            y: (parent.height - 6px) / 2;
+                            border-radius: 3px;
+                            background: d.selected ? Theme.ok : transparent;
+                        }
+                        Text {
+                            text: d.label;
+                            color: Theme.text;
+                            font-size: 13px;
+                            font-weight: d.selected ? 500 : 400;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                    dev-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.outputs-open = false;
+                            root.choose-output(d.id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

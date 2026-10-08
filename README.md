@@ -6,7 +6,7 @@ A lightweight replacement for SteelSeries Sonar / Elgato Wave Link / Voicemeeter
   parametric EQ, mixed to your headphones. Game is your Windows default output, so it also carries system sounds.
 - **Virtual Mic:** Noise Removal (DeepFilterNet3 AI) → Noise Gate → Equalizer → Compressor → output gain.
 - **Per-app routing:** drag any app onto a channel in the Apps tab. Windows remembers it.
-- **Tray flyout:** left-click the tray icon for channel volumes and mutes, the output device, and mic mute/listen.
+- **Tray flyout:** left-click the tray icon for channel and master volumes and mutes, the output device, and mic mute/listen. It's drawn natively with [Slint](https://slint.dev), so no browser engine runs while Smowaudio sits in the tray.
 - **Keyboard shortcuts:** bind almost everything in Settings (volumes, mutes, every mic filter, push to talk,
   output device). Nothing is bound by default. A small overlay in the top-right corner confirms each change.
 - **Mic test:** record 5 seconds in the Mic tab and play it back filtered or untouched.
@@ -85,7 +85,12 @@ src-tauri/src/
   audio/resample.rs  lock-free ring buffer + drift-compensating sinc resampler
   audio/routing.rs   per-app output device (AudioPolicyConfig) and session listing
   dsp/               EQ (biquads), gate, compressor, DeepFilterNet wrapper, chains
+src-tauri/ui-slint/  the tray flyout, a native Slint window (no WebView)
 ui/                  plain HTML/CSS/JS (no bundler)
   app/*.js           main window, one script per view (core, mixer, apps, mic, settings, shortcuts, main)
 vendor/DeepFilterNet official libDF + DFN3 model with a small port to current tract (see VENDORED.md)
 ```
+
+## Credits
+
+The tray flyout is [Made with Slint](https://slint.dev) (Slint royalty-free license).

@@ -4,6 +4,7 @@ mod audio;
 mod config;
 mod dsp;
 mod engine;
+mod flyout;
 mod hotkeys;
 mod icons;
 mod osd;
@@ -19,7 +20,7 @@ use serde::Serialize;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, RunEvent, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    AppHandle, Emitter, Manager, PhysicalPosition, RunEvent, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
 use audio::device::{self, DeviceInfo, Flow};
@@ -42,8 +43,6 @@ struct AppState {
     /// Devices the streams were last set up for; the device watcher restarts them when it changes.
     device_fingerprint: Mutex<config::DeviceFingerprint>,
     updates: updates::Updates,
-    /// Height the flyout's content last asked for, in CSS pixels.
-    flyout_height: Mutex<Option<f64>>,
     /// The device the output is playing to right now, as the engine reported it.
     playing_output: Mutex<Option<String>>,
     /// Its name, for the tray icon's tooltip.
@@ -687,13 +686,17 @@ fn open_window(app: &AppHandle) {
     show_main(app, None);
 }
 
-/// `--window` from style.css for the current Windows app theme.
-fn window_background() -> tauri::window::Color {
-    let light = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+/// Whether Windows apps use the light theme.
+fn apps_use_light_theme() -> bool {
+    winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
         .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
         .and_then(|key| key.get_value::<u32, _>("AppsUseLightTheme"))
-        .map_or(true, |v| v != 0);
-    if light {
+        .map_or(true, |v| v != 0)
+}
+
+/// `--window` from style.css for the current Windows app theme.
+fn window_background() -> tauri::window::Color {
+    if apps_use_light_theme() {
         tauri::window::Color(0xf6, 0xf7, 0xf9, 0xff)
     } else {
         tauri::window::Color(0x16, 0x18, 0x1d, 0xff)
@@ -702,9 +705,7 @@ fn window_background() -> tauri::window::Color {
 
 /// Shows the main window (creating it if needed), optionally on a given screen.
 fn show_main(app: &AppHandle, view: Option<&str>) {
-    if let Some(flyout) = app.get_webview_window("flyout") {
-        let _ = flyout.hide();
-    }
+    flyout::hide_from_any_thread();
     if let Some(window) = app.get_webview_window("main") {
         if let Some(view) = view {
             let _ = window.emit("show-view", view);
@@ -751,29 +752,7 @@ fn toggle_flyout_at_tray(app: &AppHandle) {
     toggle_flyout(app, anchor);
 }
 
-/// Starting size; the flyout page reports its real content height through `fit_flyout`.
-const FLYOUT_SIZE: (f64, f64) = (320.0, 330.0);
-
-/// Sizes the flyout to its content (a CSS height), keeping its bottom edge above the taskbar.
-#[tauri::command]
-fn fit_flyout(state: State<AppState>, window: WebviewWindow, height: f64) {
-    // Remembered so the flyout gets the right size before it's placed on the next show, even if
-    // this resize happened (or failed) while it was hidden.
-    *state.flyout_height.lock() = Some(height);
-    let (Ok(scale), Ok(position), Ok(size)) = (window.scale_factor(), window.outer_position(), window.outer_size())
-    else {
-        return;
-    };
-    let new_height = (height * scale).round().max(1.0) as u32;
-    if new_height == size.height {
-        return;
-    }
-    let bottom = position.y + size.height as i32;
-    let _ = window.set_size(PhysicalSize::new(size.width, new_height));
-    let _ = window.set_position(PhysicalPosition::new(position.x, bottom - new_height as i32));
-}
-
-/// Shows or hides the quick-controls flyout next to the tray icon.
+/// Shows or hides the quick-controls flyout next to the tray icon (see flyout.rs).
 fn toggle_flyout(app: &AppHandle, click: PhysicalPosition<f64>) {
     let state = app.state::<AppState>();
     // Clicking the tray icon while the flyout is open first takes focus from it, which hides it;
@@ -781,73 +760,18 @@ fn toggle_flyout(app: &AppHandle, click: PhysicalPosition<f64>) {
     if state.flyout_hidden_at.lock().is_some_and(|t| t.elapsed() < Duration::from_millis(350)) {
         return;
     }
-    let window = match app.get_webview_window("flyout") {
-        Some(window) if window.is_visible().unwrap_or(false) => {
-            let _ = window.hide();
-            return;
-        }
-        Some(window) => window,
-        None => {
-            let Ok(window) = WebviewWindowBuilder::new(app, "flyout", WebviewUrl::App("flyout.html".into()))
-                .title("Smowaudio")
-                .inner_size(FLYOUT_SIZE.0, FLYOUT_SIZE.1)
-                .decorations(false)
-                // No Windows drop shadow: it darkens a wide area around the flyout. Without it Windows
-                // won't round the corners either, so the window is transparent and the page draws
-                // its own rounded card and border.
-                .shadow(false)
-                .transparent(true)
-                .resizable(false)
-                .skip_taskbar(true)
-                .always_on_top(true)
-                .visible(false)
-                .build()
-            else {
-                return;
-            };
-            let handle = app.clone();
-            window.on_window_event(move |event| {
-                if let tauri::WindowEvent::Focused(false) = event {
-                    // Showing the window reports a spurious focus loss while focus moves into the
-                    // WebView, so only hide once the window has really stayed unfocused.
-                    let handle = handle.clone();
-                    std::thread::spawn(move || {
-                        std::thread::sleep(Duration::from_millis(150));
-                        let Some(flyout) = handle.get_webview_window("flyout") else { return };
-                        if flyout.is_focused().unwrap_or(false) || !flyout.is_visible().unwrap_or(false) {
-                            return;
-                        }
-                        let _ = flyout.hide();
-                        *handle.state::<AppState>().flyout_hidden_at.lock() = Some(Instant::now());
-                    });
-                }
-            });
-            window
-        }
+    let monitor = app.monitor_from_point(click.x, click.y).ok().flatten();
+    let anchor = flyout::Anchor {
+        x: click.x,
+        y: click.y,
+        area: monitor.as_ref().map(|m| {
+            let area = m.work_area();
+            let (left, top) = (area.position.x as f64, area.position.y as f64);
+            (left, top, left + area.size.width as f64, top + area.size.height as f64)
+        }),
+        scale: monitor.as_ref().map_or(1.0, |m| m.scale_factor()),
     };
-    if let Some(height) = *state.flyout_height.lock() {
-        let _ = window.set_size(tauri::LogicalSize::new(FLYOUT_SIZE.0, height));
-    }
-    place_flyout(&window, click);
-    let _ = window.show();
-    let _ = window.set_focus();
-    let _ = window.emit("flyout-shown", ());
-}
-
-/// Puts the flyout above the taskbar near the tray click, inside the screen's work area.
-fn place_flyout(window: &WebviewWindow, click: PhysicalPosition<f64>) {
-    let Ok(size) = window.outer_size() else { return };
-    let (width, height) = (size.width as f64, size.height as f64);
-    let margin = 12.0;
-    let mut position = PhysicalPosition::new(click.x - width / 2.0, click.y - height - margin);
-    if let Ok(Some(monitor)) = window.monitor_from_point(click.x, click.y) {
-        let area = monitor.work_area();
-        let (left, top) = (area.position.x as f64, area.position.y as f64);
-        let (right, bottom) = (left + area.size.width as f64, top + area.size.height as f64);
-        position.x = position.x.clamp(left + margin, (right - width - margin).max(left + margin));
-        position.y = (bottom - height - margin).max(top + margin);
-    }
-    let _ = window.set_position(position);
+    flyout::toggle(app, anchor);
 }
 
 /// Appends a timestamped line to %APPDATA%\Smowaudio\smowaudio.log. The release build has
@@ -930,14 +854,21 @@ fn main() {
         hotkey_errors: Mutex::new(BTreeMap::new()),
         device_fingerprint: Mutex::new(Default::default()),
         updates: updates::Updates::default(),
-        flyout_height: Mutex::new(None),
         playing_output: Mutex::new(None),
         playing_output_name: Mutex::new(None),
         tray_shown: Mutex::new((false, String::new())),
     };
 
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| open_window(app)))
+        // A second launch opens the window, or with `--flyout` toggles the tray flyout (for keyboard
+        // launchers and testing).
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if args.iter().any(|a| a == "--flyout") {
+                toggle_flyout_at_tray(app);
+            } else {
+                open_window(app);
+            }
+        }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(state)
@@ -966,7 +897,6 @@ fn main() {
             set_windows_defaults,
             set_master,
             open_main_window,
-            fit_flyout,
             set_output_device,
             set_hotkey,
             pause_hotkeys,
@@ -1001,6 +931,7 @@ fn main() {
 
             hotkeys::start(app.handle());
             updates::start_background_checks(app.handle());
+            flyout::start(app.handle());
             // After an update installs the app somewhere new (or the first installer run), point the
             // sign-in task at the exe that's running. Release builds only: a dev build would steal it.
             if cfg!(not(debug_assertions)) {

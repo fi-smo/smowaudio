@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions for the main window, the tray flyout and the shortcut overlay",
-  "windows": ["main", "flyout", "osd"],
+  "description": "Permissions for the main window and the shortcut overlay (the tray flyout is native)",
+  "windows": ["main", "osd"],
   "permissions": ["core:default", "core:window:allow-hide"]
 }
