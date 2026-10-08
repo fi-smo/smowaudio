@@ -258,6 +258,7 @@ fn show(app: &AppHandle, anchor: Anchor) {
         let mut f = f.borrow_mut();
         let Some(f) = f.as_mut() else { return };
         f.window.global::<Theme>().set_dark(!crate::apps_use_light_theme());
+        f.window.global::<Px>().set_scale(anchor.scale as f32);
         // Place it from its layout's size before it appears, then again from the window's real
         // size: the first show lays out the rows just filled in, so only then is the height final.
         let estimate = (WIDTH as f64 * anchor.scale, f.window.get_wanted_height() as f64 * anchor.scale);
@@ -265,12 +266,56 @@ fn show(app: &AppHandle, anchor: Anchor) {
         if f.window.show().is_ok() {
             let size = f.window.window().size();
             place(&f.window, anchor, (size.width as f64, size.height as f64));
-            // Take focus, so clicking elsewhere hides it again.
-            f.window.window().with_winit_window(|w: &winit::window::Window| w.focus_window());
+            // Take focus, so the scroll wheel works over the sliders straight away and clicking
+            // elsewhere hides it again. winit only asks Windows for focus once the window is
+            // visible, which it isn't until `show` has run its course, so ask a moment later.
+            slint::Timer::single_shot(Duration::from_millis(30), || focus(true));
         }
         let handle = app.clone();
         f.meter_timer.start(slint::TimerMode::Repeated, METER_EVERY, move || update_meters(&handle));
     });
+}
+
+/// Makes the open flyout the foreground window. If Windows refused (it only lets the app that the
+/// user just interacted with take focus), tries once more and leaves a line in the log.
+fn focus(retry: bool) {
+    let Some(hwnd) = FLYOUT.with(|f| {
+        let f = f.borrow();
+        let f = f.as_ref()?;
+        if !f.window.window().is_visible() {
+            return None;
+        }
+        f.window.window().with_winit_window(|w: &winit::window::Window| {
+            w.focus_window();
+            hwnd_of(w)
+        })?
+    }) else {
+        return;
+    };
+    slint::Timer::single_shot(Duration::from_millis(150), move || {
+        let foreground = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }.0 as isize;
+        if foreground == hwnd {
+            return;
+        }
+        if retry {
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(
+                    windows::Win32::Foundation::HWND(hwnd as *mut _),
+                );
+            }
+            focus(false);
+        } else {
+            crate::append_log("flyout: Windows didn't give it focus, so the scroll wheel needs a click first");
+        }
+    });
+}
+
+fn hwnd_of(window: &winit::window::Window) -> Option<isize> {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match window.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(handle) => Some(handle.hwnd.get()),
+        _ => None,
+    }
 }
 
 /// Puts the flyout (`size` in physical pixels) above the anchor, inside the screen's work area.

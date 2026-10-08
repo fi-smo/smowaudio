@@ -38,6 +38,23 @@ export global Theme {
     }
 }
 
+// ---------- pixels ----------
+// At 150 % scaling one logical pixel is 1.5 screen pixels, and an edge that lands on half a pixel
+// gets smoothed into a blur. The browser rounded such edges to whole pixels; here small shapes
+// (meter dots, fader parts, icons) do it themselves: `align` turns an offset inside a parent at
+// `origin` (its absolute position in the window) into one whose edge falls on a whole pixel.
+export global Px {
+    /// Screen pixels per logical pixel (1.5 at 150 %), set from Rust: globals can't read it.
+    in property <float> scale: 1;
+    public pure function align(offset: length, origin: length) -> length {
+        round((origin + offset) / 1px * scale) / scale * 1px - origin
+    }
+    /// A hairline: one logical pixel, rounded down to whole screen pixels (at least one).
+    public pure function hair() -> length {
+        max(1, floor(scale)) / scale * 1px
+    }
+}
+
 // ---------- data ----------
 export struct Row {
     name: string,
@@ -102,7 +119,7 @@ component Btn inherits Rectangle {
     out property <bool> hovered: ta.has-hover;
     out property <color> ink: on ? on-color : Theme.text;
     border-radius: radius;
-    border-width: 1px;
+    border-width: Px.hair();
     border-color: on ? on-color : ta.has-hover ? Theme.line-strong : Theme.line;
     background: on ? on-color.mix(Theme.panel, 0.16) : Theme.raised;
     ta := TouchArea {
@@ -112,7 +129,8 @@ component Btn inherits Rectangle {
     @children
 }
 
-/// 30 LED-style segments, like the mixer's meters, with a peak-hold mark.
+/// 30 LED-style segments, like the mixer's meters, with a peak-hold mark. Every segment starts and
+/// ends on a whole screen pixel, so the dots stay sharp at any display scaling.
 component Meter inherits Rectangle {
     in property <float> level; // 0..1
     in property <float> peak; // 0..1
@@ -120,23 +138,34 @@ component Meter inherits Rectangle {
     property <int> count: 30;
     property <int> lit: round(level * count);
     property <int> peak-at: round(peak * count) - 1;
+    property <length> ax: self.absolute-position.x;
+    property <length> ay: self.absolute-position.y;
+    // In screen pixels: every segment gets the same whole width; the gaps take up the rest
+    // (2 or 3 pixels at 150 %), which the eye notices far less than uneven dots.
+    property <float> sc: Px.scale;
+    property <float> ax-p: ax / 1px * sc;
+    property <float> gap-p: max(1, round(2 * sc));
+    property <float> pitch-p: (self.width / 1px * sc + gap-p) / count;
+    property <float> seg-p: max(1, round(pitch-p - gap-p));
+    // Top and bottom of a segment, and of the taller peak mark.
+    property <length> top: Px.align(1px, ay);
+    property <length> bottom: Px.align(5px, ay);
+    property <length> peak-top: Px.align(0, ay);
+    property <length> peak-bottom: Px.align(6px, ay);
     height: 6px;
-    HorizontalLayout {
-        spacing: 2px;
-        for i in count: Rectangle {
-            // The peak mark is a little taller than the segments around it.
-            Rectangle {
-                y: i == peak-at ? 0 : 1px;
-                height: i == peak-at ? 6px : 4px;
-                border-radius: 1px;
-                background: i == peak-at ? Theme.text.with-alpha(0.7)
-                    : i >= lit ? Theme.seg-off
-                    : single-color ? Theme.ok
-                    : i >= count * 0.85 ? Theme.hot
-                    : i >= count * 0.7 ? Theme.warn
-                    : Theme.ok;
-            }
-        }
+    for i in count: Rectangle {
+        x: (round(ax-p + i * pitch-p) - ax-p) / sc * 1px;
+        width: seg-p / sc * 1px;
+        // The peak mark is a little taller than the segments around it.
+        y: i == peak-at ? peak-top : top;
+        height: i == peak-at ? peak-bottom - peak-top : bottom - top;
+        border-radius: 1px;
+        background: i == peak-at ? Theme.text.with-alpha(0.7)
+            : i >= lit ? Theme.seg-off
+            : single-color ? Theme.ok
+            : i >= count * 0.85 ? Theme.hot
+            : i >= count * 0.7 ? Theme.warn
+            : Theme.ok;
     }
 }
 
@@ -147,6 +176,11 @@ component Fader inherits Rectangle {
     in property <color> tint;
     callback changed(float);
     property <float> top: 1.5;
+    property <length> ax: self.absolute-position.x;
+    property <length> ay: self.absolute-position.y;
+    // Edges of the groove and fill (4px tall, centred), and of the cap (18px tall).
+    property <length> groove-top: Px.align(7px, ay);
+    property <length> groove-bottom: Px.align(11px, ay);
     property <length> inset: 6px;
     property <length> track: self.width - 2 * inset;
     property <float> dragged: value;
@@ -176,49 +210,50 @@ component Fader inherits Rectangle {
 
     // Groove.
     Rectangle {
-        x: inset;
-        width: track;
-        y: (parent.height - 4px) / 2;
-        height: 4px;
+        x: Px.align(inset, ax);
+        width: Px.align(inset + track, ax) - Px.align(inset, ax);
+        y: groove-top;
+        height: groove-bottom - groove-top;
         background: Theme.well;
-        border-width: 1px;
+        border-width: Px.hair();
         border-color: Theme.line;
         border-radius: 2px;
     }
     // Unity (100 %) mark.
     Rectangle {
-        x: inset + track * (1 / root.top);
-        width: 1px;
-        y: 2px;
-        height: parent.height - 4px;
+        x: Px.align(inset + track * (1 / root.top), ax);
+        width: Px.hair();
+        y: Px.align(2px, ay);
+        height: Px.align(16px, ay) - Px.align(2px, ay);
         background: Theme.line-strong;
     }
     // Fill.
     Rectangle {
-        x: inset;
-        width: track * (shown / root.top);
-        y: (parent.height - 4px) / 2;
-        height: 4px;
+        x: Px.align(inset, ax);
+        width: Px.align(inset + track * (shown / root.top), ax) - Px.align(inset, ax);
+        y: groove-top;
+        height: groove-bottom - groove-top;
         background: tint.with-alpha(0.9);
         border-radius: 2px;
     }
     // Cap.
-    Rectangle {
-        x: inset + track * (shown / root.top) - 6px;
-        width: 12px;
-        height: 18px;
+    cap := Rectangle {
+        x: Px.align(inset + track * (shown / root.top) - 6px, ax);
+        width: Px.align(inset + track * (shown / root.top) + 6px, ax) - self.x;
+        y: Px.align(0, ay);
+        height: Px.align(18px, ay) - self.y;
         border-radius: 4px;
-        border-width: 1px;
+        border-width: Px.hair();
         border-color: Theme.line-strong;
         background: @linear-gradient(90deg, Theme.raised 0%, Theme.panel 100%);
         drop-shadow-blur: 4px;
         drop-shadow-offset-y: 1px;
         drop-shadow-color: #0000002e;
         Rectangle {
-            x: (parent.width - 2px) / 2;
-            width: 2px;
-            y: 4px;
-            height: parent.height - 8px;
+            x: Px.align((cap.width - 2px) / 2, root.ax + cap.x);
+            width: Px.align((cap.width + 2px) / 2, root.ax + cap.x) - self.x;
+            y: Px.align(4px, root.ay + cap.y);
+            height: Px.align(cap.height - 4px, root.ay + cap.y) - self.y;
             background: tint;
             border-radius: 1px;
         }
@@ -275,7 +310,7 @@ component ChannelRow inherits Rectangle {
     // Divider above every row but the first; Master's is stronger.
     if divider: Rectangle {
         y: 0;
-        height: 1px;
+        height: Px.hair();
         background: strong-divider ? Theme.line-strong : Theme.line;
     }
     // Columns as in the web version: 58px label, the fader taking the rest, 38px percentage, 28px
@@ -322,15 +357,15 @@ component ChannelRow inherits Rectangle {
     }
     Btn {
         x: parent.width - pad - 28px;
-        y: (parent.height - 24px) / 2;
+        y: Px.align((parent.height - 24px) / 2, parent.absolute-position.y);
         width: 28px;
         height: 24px;
         on: data.muted;
         label: (data.muted ? "Unmute " : "Mute ") + data.name;
         clicked => { root.mute(); }
         SpeakerIcon {
-            x: (parent.width - 15px) / 2;
-            y: (parent.height - 15px) / 2;
+            x: Px.align((parent.width - 15px) / 2, parent.absolute-position.x);
+            y: Px.align((parent.height - 15px) / 2, parent.absolute-position.y);
             width: 15px;
             height: 15px;
             off: data.muted;
@@ -385,7 +420,7 @@ export component FlyoutWindow inherits Window {
 
     // The window itself is rounded by Windows; this is its 1px border.
     Rectangle {
-        border-width: 1px;
+        border-width: Px.hair();
         border-color: Theme.line-strong;
         border-radius: 8px;
     }
@@ -423,7 +458,7 @@ export component FlyoutWindow inherits Window {
                 height: 18px;
                 y: 1px;
                 border-radius: 9px;
-                border-width: 1px;
+                border-width: Px.hair();
                 border-color: root.status-warn ? Theme.warn.mix(Theme.line, 0.45) : Theme.line;
                 status-row := HorizontalLayout {
                     padding-left: 8px;
@@ -433,7 +468,7 @@ export component FlyoutWindow inherits Window {
                     Rectangle {
                         width: 6px;
                         height: 6px;
-                        y: (parent.height - 6px) / 2;
+                        y: Px.align((parent.height - 6px) / 2, parent.absolute-position.y);
                         border-radius: 3px;
                         background: status.c;
                     }
@@ -459,7 +494,7 @@ export component FlyoutWindow inherits Window {
         output := Rectangle {
             height: 31px;
             background: Theme.panel;
-            border-width: 1px;
+            border-width: Px.hair();
             border-color: Theme.line;
             border-radius: 7px;
             Rectangle {
@@ -476,7 +511,7 @@ export component FlyoutWindow inherits Window {
                     HeadphonesIcon {
                         width: 14px;
                         height: 14px;
-                        y: (parent.height - 14px) / 2;
+                        y: Px.align((parent.height - 14px) / 2, parent.absolute-position.y);
                         stroke: Theme.muted;
                     }
                     Text {
@@ -499,7 +534,7 @@ export component FlyoutWindow inherits Window {
                         size: 12;
                         width: 12px;
                         height: 12px;
-                        y: (parent.height - 12px) / 2;
+                        y: Px.align((parent.height - 12px) / 2, parent.absolute-position.y);
                         stroke: Theme.muted;
                         stroke-width: 1.6px;
                         commands: root.outputs-open ? "M3 7.5 6 4.5 9 7.5" : "M3 4.5 6 7.5 9 4.5";
@@ -521,7 +556,7 @@ export component FlyoutWindow inherits Window {
         // Channels and Master.
         Rectangle {
             background: Theme.panel;
-            border-width: 1px;
+            border-width: Px.hair();
             border-color: Theme.line;
             border-radius: 8px;
             VerticalLayout {
@@ -540,7 +575,7 @@ export component FlyoutWindow inherits Window {
         // Mic: state and level, then Mute and Listen.
         Rectangle {
             background: Theme.panel;
-            border-width: 1px;
+            border-width: Px.hair();
             border-color: root.mic-failed ? Theme.warn.mix(Theme.line, 0.45) : Theme.line;
             border-radius: 8px;
             VerticalLayout {
@@ -581,7 +616,7 @@ export component FlyoutWindow inherits Window {
                             Icon {
                                 width: 14px;
                                 height: 14px;
-                                y: (parent.height - 14px) / 2;
+                                y: Px.align((parent.height - 14px) / 2, parent.absolute-position.y);
                                 stroke: mic-mute.ink;
                                 commands: "M7 1.5h2a1.5 1.5 0 0 1 1.5 1.5v5a1.5 1.5 0 0 1 -1.5 1.5h-2a1.5 1.5 0 0 1 -1.5 -1.5v-5a1.5 1.5 0 0 1 1.5 -1.5z M3 7.5a5 5 0 0 0 10 0M8 12.5V15";
                             }
@@ -604,7 +639,7 @@ export component FlyoutWindow inherits Window {
                             HeadphonesIcon {
                                 width: 14px;
                                 height: 14px;
-                                y: (parent.height - 14px) / 2;
+                                y: Px.align((parent.height - 14px) / 2, parent.absolute-position.y);
                                 stroke: mic-listen.ink;
                             }
                             Text {
@@ -641,8 +676,8 @@ export component FlyoutWindow inherits Window {
                 clicked => { root.open-main("settings"); }
                 Icon {
                     size: 24;
-                    x: (parent.width - 16px) / 2;
-                    y: (parent.height - 16px) / 2;
+                    x: Px.align((parent.width - 16px) / 2, parent.absolute-position.x);
+                    y: Px.align((parent.height - 16px) / 2, parent.absolute-position.y);
                     width: 16px;
                     height: 16px;
                     stroke: Theme.text;
@@ -664,7 +699,7 @@ export component FlyoutWindow inherits Window {
         width: root.width - 24px;
         height: min(list.preferred-height, 232px);
         background: Theme.panel;
-        border-width: 1px;
+        border-width: Px.hair();
         border-color: Theme.line-strong;
         border-radius: 7px;
         drop-shadow-blur: 28px;
@@ -693,7 +728,7 @@ export component FlyoutWindow inherits Window {
                         Rectangle {
                             width: 6px;
                             height: 6px;
-                            y: (parent.height - 6px) / 2;
+                            y: Px.align((parent.height - 6px) / 2, parent.absolute-position.y);
                             border-radius: 3px;
                             background: d.selected ? Theme.ok : transparent;
                         }

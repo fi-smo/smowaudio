@@ -5,6 +5,13 @@ slint::include_modules!();
 fn main() {
     let window = FlyoutWindow::new().unwrap();
     window.global::<Theme>().set_dark(std::env::args().nth(1).as_deref() != Some("light"));
+    // Like the app: the scale of the screen it opens on (known once the window exists).
+    let weak = window.as_weak();
+    slint::Timer::single_shot(std::time::Duration::from_millis(1), move || {
+        if let Some(w) = weak.upgrade() {
+            w.global::<Px>().set_scale(w.window().scale_factor());
+        }
+    });
     let row = |name: &str, volume: f32, muted: bool, level: f32, peak: f32| Row { name: name.into(), volume, muted, level, peak };
     window.set_rows(std::rc::Rc::new(slint::VecModel::from(vec![
         row("Game", 0.2, false, 0.86, 0.9),
