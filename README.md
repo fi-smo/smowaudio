@@ -6,13 +6,14 @@ A lightweight replacement for SteelSeries Sonar / Elgato Wave Link / Voicemeeter
   parametric EQ, mixed to your headphones. Game is your Windows default output, so it also carries system sounds.
 - **Virtual Mic:** Noise Removal (DeepFilterNet3 AI) → Noise Gate → Equalizer → Compressor → output gain.
 - **Per-app routing:** drag any app onto a channel in the Apps tab. Windows remembers it.
-- **Tray flyout:** left-click the tray icon for channel and master volumes and mutes, the output device, and mic mute/listen. It's drawn natively with [Slint](https://slint.dev), so no browser engine runs while Smowaudio sits in the tray.
+- **Tray flyout:** left-click the tray icon for channel and master volumes and mutes, the output device, and mic mute/listen.
 - **Keyboard shortcuts:** bind almost everything in Settings (volumes, mutes, every mic filter, push to talk,
   output device). Nothing is bound by default. A small overlay in the top-right corner confirms each change.
 - **Mic test:** record 5 seconds in the Mic tab and play it back filtered or untouched.
 - **A master for each device:** headphones and speakers each keep their own master volume and EQ.
 - **Updates:** installed automatically while nothing is playing (or with one click), with a changelog in Settings.
-- **Starts fast:** the audio engine starts before the UI. Launched at sign-in, it sits in the tray and the WebView window is only created when you open it.
+- **Light:** every window is drawn natively with [Slint](https://slint.dev), no browser engine. The audio engine starts
+  before the UI; launched at sign-in, Smowaudio sits in the tray.
 
 ## Planned
 
@@ -44,20 +45,21 @@ A lightweight replacement for SteelSeries Sonar / Elgato Wave Link / Voicemeeter
 
 ## Build & run
 
-Requirements: Rust (MSVC toolchain), Node.js, Visual Studio C++ build tools, WebView2 (built into Windows 11).
+Requirements: Rust (MSVC toolchain) and the Visual Studio C++ build tools.
 
 ```bash
-npm install
-npm run dev      # debug build with the window open
-npm run build    # optimized src-tauri/target/release/smowaudio.exe (no installer)
+cargo run              # debug build with the window open
+cargo build --release  # optimized target/release/smowaudio.exe (no installer)
 ```
 
 Run the built exe with `--background` to start straight into the tray. The "Launch at Windows sign-in" toggle
 registers a Task Scheduler task (`Smowaudio`, runs at your logon, no elevation needed) that does this for you.
-Launching the exe while it's already running just opens the existing window.
+Launching the exe while it's already running just opens the existing window (or with `--flyout`, toggles the
+tray flyout).
 
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml   # DSP unit tests
+cargo test --release   # unit tests
+cargo run --release --example main_preview   # the windows with sample data: also flyout_preview, osd_preview
 ```
 
 ## Latency
@@ -73,10 +75,15 @@ by leaving it on "Default" in the Apps tab and setting the headphones as the Win
 ## Layout
 
 ```
-src-tauri/src/
-  main.rs            tray, windows, commands exposed to the UI
-  hotkeys.rs         global keyboard shortcuts
+src/
+  main.rs            start-up, app state, settings shared by the windows
+  app.rs             event loop, tray icon, window plumbing
+  instance.rs        one copy at a time; a second launch hands over
+  mainwin.rs         main window: Mixer, Apps, Mic (settingsui.rs: Settings)
+  flyout.rs          tray flyout
   osd.rs             top-right overlay shown by shortcuts
+  hotkeys.rs         global keyboard shortcuts
+  updates.rs         update checks, signed installer download
   icons.rs           app icons for the Apps tab
   engine.rs          supervised audio threads, settings hand-off, meters
   config.rs          %APPDATA%\Smowaudio\config.json, cable auto-detection
@@ -85,12 +92,11 @@ src-tauri/src/
   audio/resample.rs  lock-free ring buffer + drift-compensating sinc resampler
   audio/routing.rs   per-app output device (AudioPolicyConfig) and session listing
   dsp/               EQ (biquads), gate, compressor, DeepFilterNet wrapper, chains
-src-tauri/ui-slint/  the tray flyout, a native Slint window (no WebView)
-ui/                  plain HTML/CSS/JS (no bundler)
-  app/*.js           main window, one script per view (core, mixer, apps, mic, settings, shortcuts, main)
+ui/                  the windows in Slint (main, mixer, apps, mic, settings, flyout, osd)
+windows/             the exe's icon, version and manifest
 vendor/DeepFilterNet official libDF + DFN3 model with a small port to current tract (see VENDORED.md)
 ```
 
 ## Credits
 
-The tray flyout is [Made with Slint](https://slint.dev) (Slint royalty-free license).
+[Made with Slint](https://slint.dev) (Slint royalty-free license).

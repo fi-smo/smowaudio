@@ -5,13 +5,18 @@
 //! - `mic.<mute|push_to_talk|push_to_mute|gain_up|gain_down|monitor|denoise|low_latency|gate|eq|compressor|limiter>`
 //! - `output.<next|previous>`, `app.<mixer|flyout>`, `windows_defaults`
 
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
+use std::str::FromStr;
 use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Manager};
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+use global_hotkey::hotkey::HotKey;
+use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+use parking_lot::Mutex;
+
+use crate::app::AppHandle;
 
 use crate::audio::device::{self, Flow};
 use crate::config::CHANNEL_NAMES;
@@ -33,14 +38,33 @@ const MAX_HOLD: Duration = Duration::from_secs(15);
 /// Shortcut presses go to one worker thread: actions touch COM and may restart the output
 /// stream, which must not happen on the UI thread, and presses must apply in order.
 static WORKER: OnceLock<Sender<(String, bool)>> = OnceLock::new();
+/// The actions each registered shortcut runs, by the shortcut's id.
+static ACTIONS: LazyLock<Mutex<HashMap<u32, Vec<String>>>> = LazyLock::new(Default::default);
+/// Shortcuts belong to the thread that registered them, whose message loop receives them: the
+/// main thread.
+static MAIN_THREAD: OnceLock<std::thread::ThreadId> = OnceLock::new();
 
+thread_local! {
+    static MANAGER: RefCell<Option<(GlobalHotKeyManager, Vec<HotKey>)>> = const { RefCell::new(None) };
+}
+
+/// Starts the worker that runs shortcut actions and registers the bound shortcuts. Call on the
+/// main thread.
 pub fn start(app: &AppHandle) {
+    let _ = MAIN_THREAD.set(std::thread::current().id());
+    GlobalHotKeyEvent::set_event_handler(Some(|event: GlobalHotKeyEvent| {
+        let pressed = event.state() == HotKeyState::Pressed;
+        if let (Some(worker), Some(actions)) = (WORKER.get(), ACTIONS.lock().get(&event.id())) {
+            for action in actions {
+                let _ = worker.send((action.clone(), pressed));
+            }
+        }
+    }));
     let (tx, rx) = channel::<(String, bool)>();
     let _ = WORKER.set(tx);
     let handle = app.clone();
     let _ = std::thread::Builder::new().name("Shortcuts".into()).spawn(move || {
         let _com = crate::audio::ComGuard::new();
-        // Registering waits for the UI thread, so it can't happen during setup, which runs on it.
         register_all(&handle);
         let apply = |action: &str, pressed: bool, fine: bool| {
             let overlay = run(&handle, action, pressed, fine);
@@ -100,31 +124,55 @@ fn repeat_interval(action: &str, held_for: Duration) -> Option<Duration> {
     }
 }
 
-/// Registers every bound shortcut, replacing the previous set, and returns why bindings failed
-/// by action id. Blocks on the UI thread, so never call it from there.
-pub fn register_all(app: &AppHandle) -> BTreeMap<String, String> {
-    let shortcuts = app.global_shortcut();
-    let _ = shortcuts.unregister_all();
-    let state = app.state::<AppState>();
-    let bindings = state.config.lock().hotkeys.clone();
+/// Runs `f` on the main thread and waits for its result (right away on the main thread).
+fn on_main_thread<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    if MAIN_THREAD.get() == Some(&std::thread::current().id()) {
+        return f();
+    }
+    let (tx, rx) = channel();
+    let _ = slint::invoke_from_event_loop(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv().expect("the event loop stopped")
+}
 
+/// Registers every bound shortcut, replacing the previous set, and returns why bindings failed
+/// by action id. Any thread.
+pub fn register_all(app: &AppHandle) -> BTreeMap<String, String> {
+    let bindings = app.state().config.lock().hotkeys.clone();
+    let errors = on_main_thread(move || register_now(bindings));
+    *app.state().hotkey_errors.lock() = errors.clone();
+    errors
+}
+
+fn register_now(bindings: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    unregister_now();
     let mut by_keys: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (action, keys) in bindings {
         by_keys.entry(keys).or_default().push(action);
     }
+    MANAGER.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.is_none() {
+            match GlobalHotKeyManager::new() {
+                Ok(manager) => *m = Some((manager, Vec::new())),
+                Err(e) => append_log(&format!("keyboard shortcuts unavailable: {e}")),
+            }
+        }
+    });
     let mut errors = BTreeMap::new();
     for (keys, actions) in by_keys {
-        let targets = actions.clone();
-        let result = shortcuts.on_shortcut(keys.as_str(), move |_, _, event| {
-            let pressed = event.state() == ShortcutState::Pressed;
-            if let Some(worker) = WORKER.get() {
-                for action in &targets {
-                    let _ = worker.send((action.clone(), pressed));
-                }
-            }
+        let result = HotKey::from_str(&keys).map_err(|e| e.to_string()).and_then(|hotkey| {
+            MANAGER.with(|m| {
+                let mut m = m.borrow_mut();
+                let (manager, registered) = m.as_mut().ok_or("Keyboard shortcuts aren't available")?;
+                manager.register(hotkey).map_err(|e| e.to_string())?;
+                registered.push(hotkey);
+                ACTIONS.lock().insert(hotkey.id(), actions.clone());
+                Ok(())
+            })
         });
-        if let Err(e) = result {
-            let message = e.to_string();
+        if let Err(message) = result {
             append_log(&format!("shortcut {keys} could not be registered: {message}"));
             let friendly = if message.to_lowercase().contains("register") {
                 "Windows or another app already uses this shortcut".to_string()
@@ -136,14 +184,23 @@ pub fn register_all(app: &AppHandle) -> BTreeMap<String, String> {
             }
         }
     }
-    *state.hotkey_errors.lock() = errors.clone();
     errors
 }
 
 /// Frees every shortcut while the user records a new one, so pressing a bound combination
-/// reaches the Settings page instead of running its action.
-pub fn unregister_all(app: &AppHandle) {
-    let _ = app.global_shortcut().unregister_all();
+/// reaches Settings instead of running its action. Any thread.
+pub fn unregister_all(_app: &AppHandle) {
+    on_main_thread(unregister_now);
+}
+
+fn unregister_now() {
+    MANAGER.with(|m| {
+        if let Some((manager, registered)) = m.borrow_mut().as_mut() {
+            let _ = manager.unregister_all(registered);
+            registered.clear();
+        }
+    });
+    ACTIONS.lock().clear();
 }
 
 /// Performs one action; `fine` is a repeat of a held volume shortcut, which moves 1 % at a time.
@@ -154,7 +211,7 @@ fn run(app: &AppHandle, action: &str, pressed: bool, fine: bool) -> Option<Osd> 
     if !pressed && !hold {
         return None;
     }
-    let state = app.state::<AppState>();
+    let state = app.state();
     let parts: Vec<&str> = action.split('.').collect();
     match parts.as_slice() {
         ["channel", name, op] => {
@@ -237,11 +294,13 @@ fn run(app: &AppHandle, action: &str, pressed: bool, fine: bool) -> Option<Osd> 
         ["output", "next"] => cycle_output(&state, 1),
         ["output", "previous"] => cycle_output(&state, -1),
         ["app", "mixer"] => {
-            crate::show_main(app, None);
+            let app = *app;
+            let _ = slint::invoke_from_event_loop(move || crate::mainwin::open(&app, None));
             None
         }
         ["app", "flyout"] => {
-            crate::toggle_flyout_at_tray(app);
+            let app = *app;
+            let _ = slint::invoke_from_event_loop(move || crate::app::toggle_flyout_at_tray(&app));
             None
         }
         ["windows_defaults"] => {

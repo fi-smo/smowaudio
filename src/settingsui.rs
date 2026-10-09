@@ -1,4 +1,4 @@
-//! The native main window's Settings view (ui-slint/settings.slint): device and cable choices,
+//! The native main window's Settings view (ui/settings.slint): device and cable choices,
 //! stream health, the delay measurement, General's toggles, keyboard shortcuts (recorded from raw
 //! key events, so the stored names are physical keys like "KeyM"), and Updates with the changelog.
 //! Everything here runs on the Slint thread; slow work goes to a background thread and comes back
@@ -10,7 +10,6 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, ModelRc, VecModel};
-use tauri::{AppHandle, Listener, Manager};
 
 use crate::audio::device::DeviceInfo;
 use crate::config::{Config, CHANNEL_COUNT, CHANNEL_NAMES};
@@ -19,7 +18,8 @@ use crate::ui::{
     ChangeEntry, DelayData, DelayRowData, DeviceRowData, HealthData, MainWindow, SelectOption, ShortcutGroup,
     ShortcutRowData, StreamItem, UpdatesData,
 };
-use crate::{audio, notify_config_changed, AppState};
+use crate::app::AppHandle;
+use crate::{audio, notify_config_changed};
 
 /// How long a toast stays: errors longer, so there's time to read them.
 const TOAST: Duration = Duration::from_millis(2400);
@@ -156,7 +156,7 @@ pub fn wire(window: &MainWindow, app: &AppHandle) {
     window.on_pick_device(move |key, id| pick_device(&handle, key.to_string(), (!id.is_empty()).then(|| id.to_string())));
     let handle = app.clone();
     window.on_preference(move |name, on| {
-        let state = handle.state::<AppState>();
+        let state = handle.state();
         let playing = state.playing_output.lock().clone();
         state.update(|c| match name.as_str() {
             "master_per_output" => {
@@ -179,7 +179,7 @@ pub fn wire(window: &MainWindow, app: &AppHandle) {
         let handle = handle.clone();
         std::thread::spawn(move || {
             let _com = audio::ComGuard::new();
-            handle.state::<AppState>().restart_engine();
+            handle.state().restart_engine();
             // Streams report back within a moment of starting.
             std::thread::sleep(Duration::from_millis(1500));
             let _ = slint::invoke_from_event_loop(move || refresh_now(&handle));
@@ -191,7 +191,7 @@ pub fn wire(window: &MainWindow, app: &AppHandle) {
     window.on_launch(move |on| {
         let handle = handle.clone();
         std::thread::spawn(move || {
-            let result = crate::set_launch_at_login_now(&handle.state::<AppState>(), on);
+            let result = crate::set_launch_at_login_now(&handle.state(), on);
             let _ = slint::invoke_from_event_loop(move || {
                 if let Err(e) = result {
                     show_error(&e);
@@ -205,7 +205,7 @@ pub fn wire(window: &MainWindow, app: &AppHandle) {
         let handle = handle.clone();
         std::thread::spawn(move || {
             let _com = audio::ComGuard::new();
-            let result = crate::set_windows_defaults_enabled(&handle.state::<AppState>(), on);
+            let result = crate::set_windows_defaults_enabled(&handle.state(), on);
             let _ = slint::invoke_from_event_loop(move || {
                 match result {
                     Ok(()) => with_window(|w| {
@@ -250,12 +250,12 @@ pub fn wire(window: &MainWindow, app: &AppHandle) {
     });
     let handle = app.clone();
     window.on_volume_step_changed(move |step| {
-        handle.state::<AppState>().update(|c| c.volume_step = step.clamp(0.01, 0.25));
+        handle.state().update(|c| c.volume_step = step.clamp(0.01, 0.25));
         refresh_now(&handle);
     });
     let handle = app.clone();
     window.on_reset_shortcuts(move || {
-        let count = handle.state::<AppState>().config.lock().hotkeys.len();
+        let count = handle.state().config.lock().hotkeys.len();
         if count == 0 {
             return;
         }
@@ -265,9 +265,9 @@ pub fn wire(window: &MainWindow, app: &AppHandle) {
             confirm(w, &text, "Clear all", move || {
                 stop_recording(&handle2);
                 with(|s| s.clash = None);
-                handle2.state::<AppState>().update(|c| c.hotkeys.clear());
+                handle2.state().update(|c| c.hotkeys.clear());
                 let errors = crate::hotkeys::register_all(&handle2);
-                *handle2.state::<AppState>().hotkey_errors.lock() = errors;
+                *handle2.state().hotkey_errors.lock() = errors;
                 with_window(|w| toast(w, "All shortcuts cleared", false));
                 refresh_now(&handle2);
             })
@@ -281,7 +281,7 @@ pub fn wire(window: &MainWindow, app: &AppHandle) {
         refresh_now(&handle);
         let handle = handle.clone();
         std::thread::spawn(move || {
-            let result = tauri::async_runtime::block_on(crate::updates::check(&handle));
+            let result = crate::updates::check(&handle);
             let _ = slint::invoke_from_event_loop(move || {
                 with(|s| s.checking = false);
                 with_window(|w| match &result {
@@ -303,7 +303,7 @@ pub fn wire(window: &MainWindow, app: &AppHandle) {
         let handle = handle.clone();
         std::thread::spawn(move || {
             // On success the installer closes the app and starts the new version.
-            let result = tauri::async_runtime::block_on(crate::updates::install(&handle));
+            let result = crate::updates::install(&handle);
             let _ = slint::invoke_from_event_loop(move || {
                 with(|s| {
                     s.installing = false;
@@ -321,25 +321,21 @@ pub fn wire(window: &MainWindow, app: &AppHandle) {
         with(|s| s.changelog_all = !s.changelog_all);
         refresh_now(&handle);
     });
+}
 
-    // Download progress and status changes from the updater.
-    let handle = app.clone();
-    app.listen_any("update-progress", move |event| {
-        let v: serde_json::Value = serde_json::from_str(event.payload()).unwrap_or_default();
-        let (done, total) = (v["downloaded"].as_f64().unwrap_or(0.0), v["total"].as_f64().unwrap_or(0.0));
-        if total > 0.0 {
-            let handle = handle.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                with(|s| s.progress = Some((done / total) as f32));
-                refresh_now(&handle);
-            });
-        }
-    });
-    let handle = app.clone();
-    app.listen_any("update-status", move |_| {
-        let handle = handle.clone();
-        let _ = slint::invoke_from_event_loop(move || refresh_now(&handle));
-    });
+/// Download progress from the updater (bytes so far, and in all). Call on the main thread.
+pub fn update_progress(app: &AppHandle, done: u64, total: u64) {
+    if total > 0 {
+        with(|s| s.progress = Some((done as f64 / total as f64) as f32));
+        refresh_now(app);
+    }
+}
+
+/// The updater found (or stopped finding) a new version. Call on the main thread.
+pub fn updates_changed(app: &AppHandle) {
+    if crate::mainwin::window().is_some_and(|w| w.get_view() == "settings") {
+        refresh_now(app);
+    }
 }
 
 fn with_window(f: impl FnOnce(&MainWindow)) {
@@ -427,7 +423,7 @@ fn apply_devices(app: &AppHandle) {
     if keys.is_empty() {
         return;
     }
-    let mut config = app.state::<AppState>().config.lock().clone();
+    let mut config = app.state().config.lock().clone();
     for (k, v) in pending {
         set_current(&mut config, &k, v);
     }
@@ -435,7 +431,7 @@ fn apply_devices(app: &AppHandle) {
     std::thread::spawn(move || {
         let _com = audio::ComGuard::new();
         let sources = config.channels.iter().map(|c| c.source.clone()).collect();
-        crate::set_devices_now(&handle.state::<AppState>(), config.output_device, config.mic_device, config.mic_sink, sources);
+        crate::set_devices_now(&handle.state(), config.output_device, config.mic_device, config.mic_sink, sources);
         notify_config_changed(&handle, "main-native");
         let _ = slint::invoke_from_event_loop(move || {
             with(|s| {
@@ -589,7 +585,7 @@ fn measure(app: &AppHandle) {
     std::thread::spawn(move || {
         let _com = audio::ComGuard::new();
         let progress_handle = handle.clone();
-        let result = crate::measure_delay_now(&handle.state::<AppState>(), move |channel| {
+        let result = crate::measure_delay_now(&handle.state(), move |channel| {
             let h = progress_handle.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 with(|s| s.delay_running = Some(channel as i32));
@@ -830,7 +826,7 @@ pub fn stop_recording(app: &AppHandle) {
             s.held.clear();
         });
         let errors = crate::hotkeys::register_all(app);
-        *app.state::<AppState>().hotkey_errors.lock() = errors;
+        *app.state().hotkey_errors.lock() = errors;
         refresh_now(app);
     }
 }
@@ -841,7 +837,7 @@ fn save_shortcut(app: &AppHandle, action: String, keys: Option<String>) {
         s.record_note = None;
         s.held.clear();
     });
-    let state = app.state::<AppState>();
+    let state = app.state();
     state.update(|c| match &keys {
         Some(keys) => {
             c.hotkeys.retain(|_, bound| bound != keys);
@@ -920,7 +916,7 @@ pub fn key_pressed(app: &AppHandle, mods: Vec<&'static str>, code: &str, is_modi
         return true;
     }
     let combo = mods.iter().copied().chain(std::iter::once(code)).collect::<Vec<_>>().join("+");
-    let hotkeys = app.state::<AppState>().config.lock().hotkeys.clone();
+    let hotkeys = app.state().config.lock().hotkeys.clone();
     if hotkeys.get(&action) == Some(&combo) {
         stop_recording(app);
         return true;
@@ -1158,7 +1154,7 @@ pub fn refresh(
     window.set_delay(delay());
     window.set_launch_at_login(config.launch_at_login);
     window.set_windows_defaults(config.set_windows_defaults);
-    let errors = app.state::<AppState>().hotkey_errors.lock().clone();
+    let errors = app.state().hotkey_errors.lock().clone();
     shortcuts(window, config, &errors);
     window.set_updates(updates(app, config));
 }

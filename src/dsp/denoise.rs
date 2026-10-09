@@ -42,7 +42,7 @@ impl Denoiser {
             .with_post_filter(settings.post_filter)
             .with_mask_reduce(ReduceMask::MAX);
         let params = if settings.low_latency {
-            DfParams::from_bytes(include_bytes!("../../../vendor/DeepFilterNet/models/DeepFilterNet3_ll_onnx.tar.gz"))?
+            DfParams::from_bytes(include_bytes!("../../vendor/DeepFilterNet/models/DeepFilterNet3_ll_onnx.tar.gz"))?
         } else {
             DfParams::default()
         };

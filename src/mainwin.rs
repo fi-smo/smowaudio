@@ -1,20 +1,19 @@
-//! The native (Slint) main window, being ported view by view from the WebView one in ../ui. It
-//! lives on the Slint thread next to the flyout (see flyout.rs) and reads settings, devices,
-//! status and meters straight from AppState and the engine. Until every view is ported it's
-//! opened with `smowaudio.exe --native-window`.
+//! The main window: Mixer, Apps, Mic and Settings (ui/main.slint). It lives on the main
+//! thread with the other windows (see app.rs) and reads settings, devices, status and meters
+//! straight from AppState and the engine.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
-use tauri::{AppHandle, Listener, Manager};
 
 use crate::audio::device::{self, DeviceInfo, Flow};
 use crate::config::{Config, CHANNEL_COUNT, CHANNEL_NAMES};
 use crate::flyout::{device_missing, meter_fraction, short_name};
 use crate::ui::{AppCardData, AppIcon, ChainTab, LaneData, MainWindow, MicData, Px, StripData, Theme};
-use crate::{audio, notify_config_changed, AppState};
+use crate::app::AppHandle;
+use crate::{audio, notify_config_changed};
 
 const MAX_VOLUME: f32 = 1.5;
 /// Meters update this often while the window is open, like the old page's polling.
@@ -64,23 +63,42 @@ const APP_SEGMENTS: f32 = 12.0;
 /// Height of the Mixer's EQ graph, in logical pixels.
 const DRAWER_GRAPH: f32 = 118.0;
 
-/// Opens the native main window (creating it the first time). Call from any thread.
-pub fn open(app: &AppHandle) {
-    let app = app.clone();
-    let _ = slint::invoke_from_event_loop(move || {
-        let created = MAIN.with(|m| m.borrow().is_some());
-        if !created {
-            if let Err(e) = create(&app) {
-                crate::append_log(&format!("native main window unavailable: {e}"));
-                return;
-            }
+/// Whether the main window is on screen; readable from any thread (the automatic updater waits
+/// for it to close).
+static OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn is_open() -> bool {
+    OPEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Opens the main window (creating it the first time), on a given view ("mixer", "apps", "mic",
+/// "settings") or the one it last showed. Call on the main thread.
+pub fn open(app: &AppHandle, view: Option<&str>) {
+    crate::flyout::hide();
+    let created = MAIN.with(|m| m.borrow().is_some());
+    if !created {
+        if let Err(e) = create(app) {
+            crate::append_log(&format!("main window unavailable: {e}"));
+            return;
         }
-        show(&app);
-    });
+    }
+    if let (Some(view), Some(w)) = (view, window()) {
+        w.set_view(view.into());
+    }
+    show(app);
+}
+
+/// Settings changed elsewhere (flyout, shortcuts): show them right away. Call on the main thread.
+pub fn config_changed(app: &AppHandle, source: &str) {
+    // The window's own changes are already on screen, and redrawing could move a fader that's
+    // being dragged.
+    if source != "main-native" {
+        refresh_if_visible(app);
+    }
 }
 
 fn create(app: &AppHandle) -> Result<(), slint::PlatformError> {
-    let window = crate::flyout::create_window(crate::flyout::WindowKind::Main, MainWindow::new)?;
+    let window = crate::app::create_window(crate::app::WindowKind::Main, MainWindow::new)?;
     let channels = Rc::new(VecModel::<StripData>::default());
     window.set_channels(ModelRc::from(channels.clone()));
     wire_callbacks(&window, app);
@@ -112,14 +130,15 @@ fn create(app: &AppHandle) -> Result<(), slint::PlatformError> {
             m.window.set_chain(ModelRc::from(m.chain.clone()));
         }
     });
-    // Settings changed elsewhere (flyout, shortcuts, the old window): show them right away.
-    let handle = app.clone();
-    app.listen_any("config-changed", move |event| {
-        if event.payload().contains("\"main-native\"") {
-            return;
+    // Closing only hides it: the app keeps running in the tray.
+    let handle = *app;
+    MAIN.with(|m| {
+        if let Some(m) = m.borrow().as_ref() {
+            m.window.window().on_close_requested(move || {
+                closed(&handle);
+                slint::CloseRequestResponse::HideWindow
+            });
         }
-        let handle = handle.clone();
-        let _ = slint::invoke_from_event_loop(move || refresh_if_visible(&handle));
     });
     Ok(())
 }
@@ -130,10 +149,16 @@ fn show(app: &AppHandle) {
         let m = m.borrow();
         let Some(m) = m.as_ref() else { return };
         m.window.global::<Theme>().set_dark(!crate::apps_use_light_theme());
+        let window = m.window.window();
+        if window.is_minimized() {
+            window.set_minimized(false);
+        }
         if let Err(e) = m.window.show() {
-            crate::append_log(&format!("native main window didn't open: {e}"));
+            crate::append_log(&format!("main window didn't open: {e}"));
             return;
         }
+        OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
+        crate::app::bring_to_front(window);
         m.window.global::<Px>().set_scale(m.window.window().scale_factor());
         let handle = app.clone();
         m.meter_timer.start(slint::TimerMode::Repeated, METER_EVERY, move || update_meters(&handle));
@@ -142,10 +167,22 @@ fn show(app: &AppHandle) {
     });
 }
 
+/// The window was closed: stop the timers and give shortcuts back if one was being recorded.
+fn closed(app: &AppHandle) {
+    OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
+    crate::settingsui::stop_recording(app);
+    MAIN.with(|m| {
+        if let Some(m) = m.borrow().as_ref() {
+            m.meter_timer.stop();
+            m.refresh_timer.stop();
+        }
+    });
+}
+
 fn wire_callbacks(window: &MainWindow, app: &AppHandle) {
     let handle = app.clone();
     window.on_strip_volume(move |strip, volume| {
-        let state = handle.state::<AppState>();
+        let state = handle.state();
         match strip as usize {
             i if i < CHANNEL_COUNT => {
                 let mut s = state.config.lock().channels[i].settings.clone();
@@ -168,7 +205,7 @@ fn wire_callbacks(window: &MainWindow, app: &AppHandle) {
     });
     let handle = app.clone();
     window.on_strip_mute(move |strip| {
-        let state = handle.state::<AppState>();
+        let state = handle.state();
         match strip as usize {
             i if i < CHANNEL_COUNT => {
                 let mut s = state.config.lock().channels[i].settings.clone();
@@ -236,7 +273,7 @@ fn wire_callbacks(window: &MainWindow, app: &AppHandle) {
             }
         });
         let _com = audio::ComGuard::new();
-        if let Err(e) = crate::assign_app_now(&handle.state::<AppState>(), pid, exe, channel) {
+        if let Err(e) = crate::assign_app_now(&handle.state(), pid, exe, channel) {
             crate::append_log(&format!("moving an app failed: {e}"));
         }
         notify_config_changed(&handle, "main-native");
@@ -279,7 +316,7 @@ fn eq_open() -> Option<usize> {
 /// Changes the open drawer's channel EQ, applies it and redraws the drawer.
 fn edit_eq(app: &AppHandle, change: impl FnOnce(&mut crate::dsp::chain::EqSettings)) {
     let Some(ch) = eq_open() else { return };
-    let state = app.state::<AppState>();
+    let state = app.state();
     let mut settings = state.config.lock().channels[ch].settings.clone();
     change(&mut settings.eq);
     let eq = settings.eq.clone();
@@ -304,7 +341,7 @@ fn wire_eq(window: &MainWindow, app: &AppHandle) {
     let handle = app.clone();
     window.on_eq_pick(move |x, y, w, h, radius| {
         let Some(ch) = eq_open() else { return -1 };
-        let eq = handle.state::<AppState>().config.lock().channels[ch].settings.eq.clone();
+        let eq = handle.state().config.lock().channels[ch].settings.eq.clone();
         crate::eqedit::pick(&eq, x, y, w, h, radius).map_or(-1, |i| i as i32)
     });
     let handle = app.clone();
@@ -438,7 +475,7 @@ fn cable_label(devices: &[DeviceInfo], id: &Option<String>) -> String {
 /// Everything but the meters, from the current settings, devices, apps and stream status.
 fn refresh(app: &AppHandle) {
     let _com = audio::ComGuard::new();
-    let state = app.state::<AppState>();
+    let state = app.state();
     let config: Config = state.config.lock().clone();
     let status = state.engine.lock().as_ref().map(|e| e.shared.status.lock().clone()).unwrap_or_default();
     let capture = device::list(Flow::Capture).unwrap_or_default();
@@ -591,7 +628,7 @@ pub(crate) fn window() -> Option<MainWindow> {
 pub(crate) fn refresh_settings(app: &AppHandle) {
     let Some(w) = window() else { return };
     let _com = audio::ComGuard::new();
-    let state = app.state::<AppState>();
+    let state = app.state();
     let config: Config = state.config.lock().clone();
     let status = state.engine.lock().as_ref().map(|e| e.shared.status.lock().clone()).unwrap_or_default();
     let capture = device::list(Flow::Capture).unwrap_or_default();
@@ -836,7 +873,7 @@ fn fill_mic_settings(md: &mut MicData, mic: &crate::dsp::chain::MicSettings) {
 /// Changes the mic settings, applies them, and shows the result without a full refresh (slider
 /// drags call this many times a second).
 fn edit_mic(app: &AppHandle, change: impl FnOnce(&mut crate::dsp::chain::MicSettings)) {
-    let state = app.state::<AppState>();
+    let state = app.state();
     let mut mic = state.config.lock().mic.clone();
     change(&mut mic);
     state.set_mic_settings(mic.clone());
@@ -901,7 +938,7 @@ fn wire_mic(window: &MainWindow, app: &AppHandle) {
     window.on_mic_listen(move || edit_mic(&handle, |mic| mic.monitor = !mic.monitor));
     let handle = app.clone();
     window.on_mic_test(move |action| {
-        let state = handle.state::<AppState>();
+        let state = handle.state();
         let engine = state.engine.lock();
         let Some(engine) = engine.as_ref() else { return };
         let result = match action.as_str() {
@@ -930,7 +967,7 @@ fn wire_mic(window: &MainWindow, app: &AppHandle) {
     window.on_mic_eq_preset(move |name| edit_mic(&handle, |mic| crate::eqedit::apply_preset(&mut mic.eq, &name)));
     let handle = app.clone();
     window.on_mic_eq_pick(move |x, y, w, h, radius| {
-        let eq = handle.state::<AppState>().config.lock().mic.eq.clone();
+        let eq = handle.state().config.lock().mic.eq.clone();
         crate::eqedit::pick(&eq, x, y, w, h, radius).map_or(-1, |i| i as i32)
     });
     let handle = app.clone();
@@ -941,7 +978,7 @@ fn wire_mic(window: &MainWindow, app: &AppHandle) {
 
 /// Meters at 20 fps: each strip's two sides with the mixer's peak hold, Buffer and Limit.
 fn update_meters(app: &AppHandle) {
-    let state = app.state::<AppState>();
+    let state = app.state();
     let Some(meters) = state.engine.lock().as_ref().map(|e| e.meters()) else { return };
     // The engine reports 0 dB for a mic that isn't running; show it empty.
     let mic_running = state

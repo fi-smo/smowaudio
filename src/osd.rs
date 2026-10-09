@@ -1,5 +1,5 @@
 //! On-screen overlay in the top-right corner, confirming what a keyboard shortcut changed. A
-//! Slint window (ui-slint/osd.slint) on the Slint thread that never takes focus or clicks.
+//! Slint window (ui/osd.slint) on the main thread that never takes focus or clicks.
 
 use std::cell::RefCell;
 use std::time::Duration;
@@ -7,16 +7,14 @@ use std::time::Duration;
 use serde::Serialize;
 use slint::winit_030::{winit, WinitWindowAccessor};
 use slint::{ComponentHandle, PhysicalPosition};
-use tauri::AppHandle;
-use windows::Win32::Foundation::{HWND, POINT};
-use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY};
-use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+use crate::app::AppHandle;
+use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST,
+    GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST,
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WS_EX_NOACTIVATE,
 };
 
-use crate::flyout::{create_window, hwnd_of, WindowKind};
+use crate::app::{create_window, hwnd_of, work_area_at_cursor, WindowKind};
 use crate::ui::{OsdWindow, Theme};
 
 /// Window size in logical pixels; the card inside leaves room for its shadow.
@@ -97,7 +95,7 @@ fn show_now(osd: Osd) {
 
         if !o.up {
             // Top-right of the screen the mouse is on, which is where the user is looking.
-            if let Some((right, top, scale)) = cursor_work_area() {
+            if let Some(((_, top, right, _), scale)) = work_area_at_cursor() {
                 let x = right - ((SIZE.0 + MARGIN) * scale).round() as i32;
                 let y = top + (MARGIN * scale).round() as i32;
                 w.window().set_position(PhysicalPosition::new(x, y));
@@ -158,21 +156,4 @@ fn hide() {
             o.up = false;
         }
     });
-}
-
-/// The right and top edges of the work area of the screen the mouse is on (physical pixels), and
-/// that screen's scale.
-fn cursor_work_area() -> Option<(i32, i32, f64)> {
-    unsafe {
-        let mut point = POINT::default();
-        GetCursorPos(&mut point).ok()?;
-        let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTOPRIMARY);
-        let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
-        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
-            return None;
-        }
-        let (mut dpi_x, mut dpi_y) = (96, 96);
-        let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y);
-        Some((info.rcWork.right, info.rcWork.top, dpi_x as f64 / 96.0))
-    }
 }

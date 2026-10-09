@@ -1,22 +1,20 @@
 //! The tray flyout: quick channel volumes, the output device and mic controls, drawn natively
-//! with Slint (ui-slint/flyout.slint) instead of a WebView, so nothing heavier than Smowaudio
-//! itself runs while the main window is closed.
+//! with Slint (ui/flyout.slint), so nothing heavier than Smowaudio itself runs while the main
+//! window is closed.
 //!
-//! Slint runs its own event loop on a "Flyout" thread (winit allows that on Windows), next to
-//! Tauri's on the main thread. Everything that touches the Slint window happens on that thread:
-//! other threads hand work over with `slint::invoke_from_event_loop`.
+//! It lives on the main thread with the other windows (see app.rs).
 
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use slint::winit_030::{winit, CustomApplicationHandler, EventResult, WinitWindowAccessor};
+use slint::winit_030::{winit, WinitWindowAccessor};
 use slint::{ComponentHandle, Model, ModelRc, PhysicalPosition, VecModel};
-use tauri::{AppHandle, Listener, Manager};
 
 use crate::audio::device::{self, Flow};
 use crate::config::{CHANNEL_COUNT, CHANNEL_NAMES};
-use crate::{audio, notify_config_changed, AppState};
+use crate::app::AppHandle;
+use crate::{audio, notify_config_changed};
 
 use crate::ui::{Device, FlyoutWindow, Px, Row, Theme};
 
@@ -30,7 +28,7 @@ const METER_EVERY: Duration = Duration::from_millis(50);
 const PEAK_HOLD: Duration = Duration::from_millis(900);
 
 thread_local! {
-    /// The flyout window and its meter state; only ever touched on the Flyout thread.
+    /// The flyout window and its meter state; only ever touched on the main thread.
     static FLYOUT: RefCell<Option<Flyout>> = const { RefCell::new(None) };
 }
 
@@ -44,8 +42,7 @@ struct Flyout {
 }
 
 /// Where to put the flyout: the point it hangs above (the tray click, or the tray icon), and the
-/// work area and scale of the screen that point is on. Worked out on the main thread, where Tauri
-/// answers monitor questions.
+/// work area and scale of the screen that point is on.
 #[derive(Clone, Copy)]
 pub struct Anchor {
     pub x: f64,
@@ -55,86 +52,15 @@ pub struct Anchor {
     pub scale: f64,
 }
 
-/// Starts the Flyout thread and its Slint event loop. The window is created hidden.
-pub fn start(app: &AppHandle) {
-    let app = app.clone();
-    let spawned = std::thread::Builder::new().name("Flyout".into()).spawn(move || {
-        if let Err(e) = run(app) {
-            crate::append_log(&format!("flyout unavailable: {e}"));
-        }
-    });
-    if let Err(e) = spawned {
-        crate::append_log(&format!("flyout thread failed to start: {e}"));
-    }
-}
-
-/// Which window is being created next: Slint asks for its window attributes before it knows.
-#[derive(Clone, Copy)]
-pub(crate) enum WindowKind {
-    Flyout,
-    Main,
-    Overlay,
-}
-
-thread_local! {
-    static NEXT_WINDOW: std::cell::Cell<WindowKind> = const { std::cell::Cell::new(WindowKind::Flyout) };
-}
-
-/// Creates a window of the given kind (`create` calls its `::new()`).
-pub(crate) fn create_window<T>(kind: WindowKind, create: impl FnOnce() -> T) -> T {
-    NEXT_WINDOW.set(kind);
-    let window = create();
-    NEXT_WINDOW.set(WindowKind::Flyout);
-    window
-}
-
-fn run(app: AppHandle) -> Result<(), slint::PlatformError> {
-    // Device names and the output list need COM on this thread.
-    let _com = audio::ComGuard::new();
-    slint::BackendSelector::new()
-        .backend_name("winit".into())
-        // A small window that changes rarely: the software renderer needs no GPU context.
-        .renderer_name("software".into())
-        .with_winit_window_attributes_hook(|attributes| {
-            use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
-            // Drag and drop needs OLE's single-threaded COM, but this thread uses the
-            // multithreaded kind for the device list; no window here takes drops anyway.
-            let attributes = attributes.with_drag_and_drop(false);
-            match NEXT_WINDOW.get() {
-                WindowKind::Main => return attributes.with_skip_taskbar(false),
-                WindowKind::Overlay => {
-                    return attributes
-                        .with_decorations(false)
-                        .with_resizable(false)
-                        .with_skip_taskbar(true)
-                        .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
-                        .with_active(false)
-                        .with_undecorated_shadow(false)
-                        .with_corner_preference(CornerPreference::DoNotRound)
-                        .with_border_color(None)
-                }
-                WindowKind::Flyout => {}
-            }
-            attributes
-                .with_decorations(false)
-                .with_resizable(false)
-                .with_skip_taskbar(true)
-                // Windows 11 rounds the corners; no drop shadow (it darkens a wide area around
-                // the flyout) and no system border (the flyout draws its own).
-                .with_undecorated_shadow(false)
-                .with_corner_preference(CornerPreference::Round)
-                .with_border_color(None)
-        })
-        .with_winit_custom_application_handler(FocusWatcher { app: app.clone(), mods: Default::default() })
-        .select()?;
-
+/// Creates the flyout, hidden. Call on the main thread once the Slint backend is set up.
+pub fn create(app: &AppHandle) -> Result<(), slint::PlatformError> {
     let window = FlyoutWindow::new()?;
     window.global::<Theme>().set_dark(!crate::apps_use_light_theme());
     let rows = Rc::new(VecModel::<Row>::default());
     let devices = Rc::new(VecModel::<Device>::default());
     window.set_rows(ModelRc::from(rows.clone()));
     window.set_devices(ModelRc::from(devices.clone()));
-    wire_callbacks(&window, &app);
+    wire_callbacks(&window, app);
 
     FLYOUT.with(|f| {
         *f.borrow_mut() = Some(Flyout {
@@ -145,80 +71,22 @@ fn run(app: AppHandle) -> Result<(), slint::PlatformError> {
             meter_timer: slint::Timer::default(),
         })
     });
-
-    // Settings changed elsewhere (main window, shortcuts): show them if the flyout is open.
-    let handle = app.clone();
-    app.listen_any("config-changed", move |event| {
-        // The flyout's own changes are already on screen.
-        if event.payload().contains("\"flyout\"") {
-            return;
-        }
-        let handle = handle.clone();
-        let _ = slint::invoke_from_event_loop(move || refresh_if_visible(&handle));
-    });
-
-    slint::run_event_loop_until_quit()
+    Ok(())
 }
 
-/// Hides the flyout when it loses focus, like Windows' own tray flyouts.
-struct FocusWatcher {
-    app: AppHandle,
-    /// Held modifiers, for recording shortcuts in the main window.
-    mods: winit::keyboard::ModifiersState,
-}
-
-impl CustomApplicationHandler for FocusWatcher {
-    fn window_event(
-        &mut self,
-        _event_loop: &winit::event_loop::ActiveEventLoop,
-        window_id: winit::window::WindowId,
-        _winit_window: Option<&winit::window::Window>,
-        _slint_window: Option<&slint::Window>,
-        event: &winit::event::WindowEvent,
-    ) -> EventResult {
-        use winit::event::WindowEvent;
-        match event {
-            WindowEvent::Focused(false) => {
-                // Only the flyout's own focus: the main window losing focus to it mustn't close it.
-                let flyout = FLYOUT.with(|f| {
-                    f.borrow().as_ref().and_then(|f| f.window.window().with_winit_window(|w: &winit::window::Window| w.id()))
-                }) == Some(window_id);
-                if flyout {
-                    hide();
-                    *self.app.state::<AppState>().flyout_hidden_at.lock() = Some(Instant::now());
-                }
-            }
-            // A shortcut being recorded in Settings takes the keys before Slint sees them.
-            WindowEvent::ModifiersChanged(m) => {
-                self.mods = m.state();
-                if crate::settingsui::is_recording() {
-                    crate::settingsui::key_pressed(&self.app, held(self.mods), "", true);
-                }
-            }
-            WindowEvent::KeyboardInput { event, .. } if crate::settingsui::is_recording() => {
-                if event.state.is_pressed() && !event.repeat {
-                    if let winit::keyboard::PhysicalKey::Code(code) = event.physical_key {
-                        let name = format!("{code:?}");
-                        let modifier = ["Control", "Alt", "Shift", "Super", "Meta"].iter().any(|m| name.starts_with(m));
-                        if !modifier {
-                            crate::settingsui::key_pressed(&self.app, held(self.mods), &name, false);
-                        }
-                    }
-                }
-                return EventResult::PreventDefault;
-            }
-            _ => {}
-        }
-        EventResult::Propagate
+/// Settings changed elsewhere (main window, shortcuts): show them if the flyout is open. Call on
+/// the main thread.
+pub fn config_changed(app: &AppHandle, source: &str) {
+    // The flyout's own changes are already on screen.
+    if source != "flyout" {
+        refresh_if_visible(app);
     }
 }
 
-/// Modifiers in the order shortcuts are written: Ctrl, Alt, Shift, Win.
-fn held(m: winit::keyboard::ModifiersState) -> Vec<&'static str> {
-    [(m.control_key(), "Ctrl"), (m.alt_key(), "Alt"), (m.shift_key(), "Shift"), (m.super_key(), "Super")]
-        .into_iter()
-        .filter_map(|(on, name)| on.then_some(name))
-        .collect()
+/// Whether a winit window is the flyout.
+pub fn is_window(id: winit::window::WindowId) -> bool {
+    FLYOUT.with(|f| f.borrow().as_ref().and_then(|f| f.window.window().with_winit_window(|w: &winit::window::Window| w.id())))
+        == Some(id)
 }
 
 fn wire_callbacks(window: &FlyoutWindow, app: &AppHandle) {
@@ -248,14 +116,14 @@ fn wire_callbacks(window: &FlyoutWindow, app: &AppHandle) {
         // Reopening the output stream takes a moment: off this thread, like the old command.
         std::thread::spawn(move || {
             let _com = audio::ComGuard::new();
-            handle.state::<AppState>().set_output(output);
+            handle.state().set_output(output);
             notify_config_changed(&handle, "flyout");
             let _ = slint::invoke_from_event_loop(move || refresh(&handle));
         });
     });
     let handle = app.clone();
     window.on_toggle_mic_mute(move || {
-        let state = handle.state::<AppState>();
+        let state = handle.state();
         let mut mic = state.config.lock().mic.clone();
         mic.muted = !mic.muted;
         state.set_mic_settings(mic);
@@ -264,7 +132,7 @@ fn wire_callbacks(window: &FlyoutWindow, app: &AppHandle) {
     });
     let handle = app.clone();
     window.on_toggle_mic_listen(move || {
-        let state = handle.state::<AppState>();
+        let state = handle.state();
         let mut mic = state.config.lock().mic.clone();
         mic.monitor = !mic.monitor;
         state.set_mic_settings(mic);
@@ -274,18 +142,14 @@ fn wire_callbacks(window: &FlyoutWindow, app: &AppHandle) {
     let handle = app.clone();
     window.on_open_main(move |view| {
         hide();
-        let handle = handle.clone();
-        let view = view.to_string();
-        // Creating the main window from a non-async context can deadlock WebView2; a plain thread
-        // is what the old async command amounted to.
-        std::thread::spawn(move || crate::show_main(&handle, Some(&view)));
+        crate::mainwin::open(&handle, Some(view.as_str()));
     });
     window.on_dismiss(hide);
 }
 
 /// Changes one row's settings (0..3 channels, 4 Master) and tells the rest of the app.
 fn update_row(app: &AppHandle, row: usize, change: impl FnOnce(&mut crate::dsp::chain::ChannelSettings)) {
-    let state = app.state::<AppState>();
+    let state = app.state();
     if row < CHANNEL_COUNT {
         let mut settings = state.config.lock().channels[row].settings.clone();
         change(&mut settings);
@@ -311,12 +175,7 @@ pub fn toggle(app: &AppHandle, anchor: Anchor) {
     });
 }
 
-/// Hides the flyout. Call from any thread.
-pub fn hide_from_any_thread() {
-    let _ = slint::invoke_from_event_loop(hide);
-}
-
-fn hide() {
+pub fn hide() {
     FLYOUT.with(|f| {
         if let Some(f) = f.borrow_mut().as_mut() {
             f.window.set_outputs_open(false);
@@ -361,7 +220,7 @@ fn focus(retry: bool) {
         }
         f.window.window().with_winit_window(|w: &winit::window::Window| {
             w.focus_window();
-            hwnd_of(w)
+            crate::app::hwnd_of(w)
         })?
     }) else {
         return;
@@ -382,14 +241,6 @@ fn focus(retry: bool) {
             crate::append_log("flyout: Windows didn't give it focus, so the scroll wheel needs a click first");
         }
     });
-}
-
-pub(crate) fn hwnd_of(window: &winit::window::Window) -> Option<isize> {
-    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    match window.window_handle().ok()?.as_raw() {
-        RawWindowHandle::Win32(handle) => Some(handle.hwnd.get()),
-        _ => None,
-    }
 }
 
 /// Puts the flyout (`size` in physical pixels) above the anchor, inside the screen's work area.
@@ -413,7 +264,7 @@ fn refresh_if_visible(app: &AppHandle) {
 
 /// Fills in everything but the meters from the current settings, devices and stream status.
 fn refresh(app: &AppHandle) {
-    let state = app.state::<AppState>();
+    let state = app.state();
     let config = state.config.lock().clone();
     let status = state.engine.lock().as_ref().map(|e| e.shared.status.lock().clone()).unwrap_or_default();
     let render = device::list(Flow::Render).unwrap_or_default();
@@ -503,7 +354,7 @@ fn refresh(app: &AppHandle) {
 
 /// Meters at 20 fps while open: each row's louder side, with the mixer's peak hold.
 fn update_meters(app: &AppHandle) {
-    let state = app.state::<AppState>();
+    let state = app.state();
     let Some(meters) = state.engine.lock().as_ref().map(|e| e.meters()) else { return };
     let (mic_running, mic_muted) = {
         let status = state.engine.lock().as_ref().map(|e| e.shared.status.lock().get("Microphone").cloned()).flatten();
