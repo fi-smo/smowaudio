@@ -5,8 +5,10 @@ import { ScrollView } from "std-widgets.slint";
 import { Theme, Px, Icon } from "common.slint";
 import { MixerView, StripData } from "mixer.slint";
 import { EqData, EqBandData } from "eq.slint";
+import { AppsView, AppCardData, LaneData } from "apps.slint";
+import { MicView, MicData, ChainTab } from "mic.slint";
 
-export { StripData, EqData, EqBandData }
+export { StripData, EqData, EqBandData, AppCardData, LaneData, MicData, ChainTab }
 
 /// One section button in the rail: an icon over its name.
 component RailButton inherits Rectangle {
@@ -121,6 +123,29 @@ export component MainWindow inherits Window {
     callback eq-pick(float, float, float, float, float) -> int;
     callback eq-drag(int, float, float, float, float);
     callback eq-widen(int, bool);
+
+    // Apps.
+    in property <[LaneData]> lanes;
+    in property <int> apps-playing;
+    in property <bool> apps-empty;
+    callback move-app(string, int);
+
+    // Mic.
+    in property <MicData> mic-data;
+    in property <[ChainTab]> chain;
+    in-out property <string> mic-step: "denoise";
+    in property <EqData> mic-eq;
+    in-out property <int> mic-eq-selected: -1;
+    callback mic-set(string, float);
+    callback mic-toggle(string, bool);
+    callback mic-mute;
+    callback mic-listen;
+    callback mic-test(string);
+    callback open-devices;
+    callback mic-eq-preset(string);
+    callback mic-eq-pick(float, float, float, float, float) -> int;
+    callback mic-eq-drag(int, float, float, float, float);
+    callback mic-eq-widen(int, bool);
 
     callback view-changed(string);
     callback strip-volume(int, float);
@@ -276,7 +301,30 @@ export component MainWindow inherits Window {
                         eq-drag(i, x, y, w, h) => { root.eq-drag(i, x, y, w, h); }
                         eq-widen(i, n) => { root.eq-widen(i, n); }
                     }
-                    if root.view != "mixer": Text {
+                    if root.view == "apps": AppsView {
+                        lanes: root.lanes;
+                        playing: root.apps-playing;
+                        empty: root.apps-empty;
+                        move-app(exe, ch) => { root.move-app(exe, ch); }
+                    }
+                    if root.view == "mic": MicView {
+                        mic: root.mic-data;
+                        chain: root.chain;
+                        selected <=> root.mic-step;
+                        eq: root.mic-eq;
+                        eq-selected <=> root.mic-eq-selected;
+                        set(k, v) => { root.mic-set(k, v); }
+                        toggle(k, v) => { root.mic-toggle(k, v); }
+                        mute => { root.mic-mute(); }
+                        listen => { root.mic-listen(); }
+                        test(a) => { root.mic-test(a); }
+                        open-devices => { root.open-devices(); }
+                        eq-preset(p) => { root.mic-eq-preset(p); }
+                        eq-pick(x, y, w, h, r) => { root.mic-eq-pick(x, y, w, h, r) }
+                        eq-drag(i, x, y, w, h) => { root.mic-eq-drag(i, x, y, w, h); }
+                        eq-widen(i, n) => { root.mic-eq-widen(i, n); }
+                    }
+                    if root.view != "mixer" && root.view != "apps" && root.view != "mic": Text {
                         text: "This section isn't in the native window yet.";
                         color: Theme.muted;
                         font-size: 13px;

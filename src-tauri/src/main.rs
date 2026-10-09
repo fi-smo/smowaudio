@@ -600,7 +600,7 @@ async fn assign_app(app: AppHandle, pid: u32, exe: String, channel: Option<usize
     background(app, move |state| assign_app_now(state, pid, exe, channel)).await
 }
 
-fn assign_app_now(state: &AppState, pid: u32, exe: String, channel: Option<usize>) -> CmdResult<()> {
+pub(crate) fn assign_app_now(state: &AppState, pid: u32, exe: String, channel: Option<usize>) -> CmdResult<()> {
     let config = state.update(|c| match channel {
         Some(ch) => {
             c.app_rules.insert(exe.clone(), ch);

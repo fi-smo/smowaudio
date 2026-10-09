@@ -27,6 +27,7 @@ export global Theme {
     out property <color> warn: dark ? #e6c14a : #c29310;
     out property <color> hot: dark ? #ec5b56 : #cf423c;
     out property <color> seg-off: dark ? #262a32 : #d3d8df;
+    out property <color> focus: dark ? #6cc0f2 : #1b7fb8;
 
     out property <string> font-ui: "Segoe UI Variable Text";
     out property <string> font-label: "Bahnschrift";
@@ -383,4 +384,291 @@ export component Seg inherits Rectangle {
             accessible-action-default => { if !off { root.picked(o); } }
         }
     }
+}
+
+/// A panel with a title and help text in its header, and an optional switch on the right.
+export component Card inherits Rectangle {
+    in property <string> title;
+    in property <string> help;
+    in property <bool> has-switch;
+    in-out property <bool> switch-on;
+    in property <color> tint: Theme.mic;
+    in property <string> switch-label;
+    callback switched(bool);
+    background: Theme.panel;
+    border-width: Px.hair();
+    border-color: Theme.line;
+    border-radius: 8px;
+    height: body.preferred-height;
+    body := VerticalLayout {
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 12px;
+            padding-bottom: 10px;
+            spacing: 16px;
+            VerticalLayout {
+                spacing: 2px;
+                horizontal-stretch: 1;
+                Text { text: root.title; color: Theme.text; font-size: 15px; font-weight: 600; }
+                if root.help != "": Text {
+                    text: root.help;
+                    color: Theme.muted;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+            }
+            if root.has-switch: VerticalLayout {
+                alignment: start;
+                padding-top: 2px;
+                Switch {
+                    checked <=> root.switch-on;
+                    text: root.switch-on ? "On" : "Off";
+                    label: root.switch-label;
+                    tint: root.tint;
+                    toggled(on) => { root.switched(on); }
+                }
+            }
+        }
+        @children
+    }
+}
+
+/// A horizontal range slider like the browser's: a 4px track filled in the tint up to a round
+/// thumb. Drag, click, scroll or use the arrow keys.
+export component Slider inherits Rectangle {
+    in property <float> minimum: 0;
+    in property <float> maximum: 100;
+    in property <float> step: 1;
+    in property <float> value;
+    in property <color> tint: Theme.mic;
+    in property <string> label;
+    callback changed(float);
+    property <float> frac: max(0, min(1, (value - minimum) / (maximum - minimum)));
+    height: 20px;
+    accessible-role: slider;
+    accessible-label: label;
+    accessible-value: value;
+    accessible-value-minimum: minimum;
+    accessible-value-maximum: maximum;
+    accessible-value-step: step;
+    accessible-action-increment => { set(value + step); }
+    accessible-action-decrement => { set(value - step); }
+    accessible-action-set-value(v) => { set(v.to-float()); }
+
+    function set(v: float) {
+        let snapped = round((max(minimum, min(maximum, v)) - minimum) / step) * step + minimum;
+        if snapped != value { root.changed(snapped); }
+    }
+    Rectangle {
+        y: (parent.height - 4px) / 2;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.well;
+        border-width: Px.hair();
+        border-color: Theme.line;
+    }
+    Rectangle {
+        x: 0;
+        y: (parent.height - 4px) / 2;
+        width: (parent.width - 16px) * root.frac + 8px;
+        height: 4px;
+        border-radius: 2px;
+        background: root.tint;
+    }
+    Rectangle {
+        x: (parent.width - 16px) * root.frac;
+        y: (parent.height - 16px) / 2;
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        background: root.tint;
+        border-width: 2px;
+        border-color: Theme.panel;
+    }
+    focus := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.RightArrow || e.text == Key.UpArrow { root.set(root.value + root.step); return accept; }
+            if e.text == Key.LeftArrow || e.text == Key.DownArrow { root.set(root.value - root.step); return accept; }
+            reject
+        }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                focus.focus();
+                root.set(root.minimum + max(0, min(1, (self.mouse-x - 8px) / (root.width - 16px))) * (root.maximum - root.minimum));
+            }
+        }
+        moved => {
+            if self.pressed {
+                root.set(root.minimum + max(0, min(1, (self.mouse-x - 8px) / (root.width - 16px))) * (root.maximum - root.minimum));
+            }
+        }
+        scroll-event(e) => {
+            root.set(root.value + (e.delta-y > 0 ? root.step : -root.step));
+            accept
+        }
+    }
+}
+
+/// A labelled slider row: name and value above, slider below (the old `.ctl`).
+export component SliderRow inherits VerticalLayout {
+    in property <string> label;
+    in property <string> shown;
+    in property <float> minimum: 0;
+    in property <float> maximum: 100;
+    in property <float> step: 1;
+    in property <float> value;
+    in property <color> tint: Theme.mic;
+    callback changed(float);
+    spacing: 2px;
+    HorizontalLayout {
+        Text { text: root.label; color: Theme.muted; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
+        Text { text: root.shown; color: Theme.text; font-family: Theme.font-num; font-size: 13px; vertical-alignment: center; }
+    }
+    Slider {
+        minimum: root.minimum;
+        maximum: root.maximum;
+        step: root.step;
+        value: root.value;
+        tint: root.tint;
+        label: root.label;
+        changed(v) => { root.changed(v); }
+    }
+}
+
+/// A compact number field: drag up or down to change it (a step per 3px), or click and type.
+export component ValueField inherits Rectangle {
+    in property <string> label;
+    in property <string> unit;
+    in property <float> value;
+    in property <float> minimum;
+    in property <float> maximum;
+    in property <float> step: 1;
+    callback changed(float);
+    property <float> start-value;
+    property <bool> dragged;
+    height: 44px;
+    border-radius: 6px;
+    border-width: Px.hair();
+    border-color: input.has-focus ? Theme.mic : Theme.line;
+    background: Theme.raised;
+    accessible-role: spinbox;
+    accessible-label: root.label + " in " + root.unit;
+    accessible-value: root.value;
+    accessible-action-increment => { set(value + step); }
+    accessible-action-decrement => { set(value - step); }
+    accessible-action-set-value(v) => { set(v.to-float()); }
+
+    function set(v: float) {
+        root.changed(round(max(minimum, min(maximum, v)) / step) * step);
+    }
+    function shown(v: float) -> string {
+        step < 1 ? round(v * 10) / 10 : round(v)
+    }
+    VerticalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: 6px;
+        padding-bottom: 6px;
+        spacing: 2px;
+        Text { text: root.label; color: Theme.faint; font-size: 11px; }
+        HorizontalLayout {
+            spacing: 4px;
+            input := TextInput {
+                text: root.shown(root.value);
+                color: Theme.text;
+                font-family: Theme.font-num;
+                font-size: 13px;
+                font-weight: 500;
+                horizontal-stretch: 0;
+                min-width: 20px;
+                accepted => {
+                    if self.text.is-float() { root.set(self.text.to-float()); }
+                    self.text = root.shown(root.value);
+                    self.clear-focus();
+                }
+                key-pressed(e) => {
+                    if e.text == Key.UpArrow { root.set(root.value + root.step); return accept; }
+                    if e.text == Key.DownArrow { root.set(root.value - root.step); return accept; }
+                    reject
+                }
+            }
+            Text { text: root.unit; color: Theme.faint; font-family: Theme.font-num; font-size: 11px; vertical-alignment: center; }
+            Rectangle { horizontal-stretch: 1; }
+        }
+    }
+    // Dragging changes the value; a click without moving types into it.
+    TouchArea {
+        mouse-cursor: ns-resize;
+        property <length> start-y;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down {
+                self.start-y = self.mouse-y;
+                root.start-value = root.value;
+                root.dragged = false;
+            }
+            if e.kind == PointerEventKind.up && !root.dragged { input.focus(); }
+        }
+        moved => {
+            if !self.pressed { return; }
+            let d = round((self.start-y - self.mouse-y) / 3px);
+            if !root.dragged && abs(d) < 1 { return; }
+            root.dragged = true;
+            root.set(root.start-value + d * root.step);
+        }
+    }
+}
+
+/// A plain text button in the old `.btn` look, with an optional 14px icon before the text.
+export component TextButton inherits Btn {
+    in property <string> text;
+    in property <string> icon; // 16x16 path, or ""
+    in property <length> font-size: 12px;
+    in property <bool> enabled: true;
+    label: text;
+    opacity: enabled ? 1 : 0.45;
+    min-width: row.preferred-width + 4px;
+    preferred-width: row.preferred-width + 4px;
+    horizontal-stretch: 0;
+    row := HorizontalLayout {
+        alignment: center;
+        spacing: 6px;
+        padding-left: 10px;
+        padding-right: 10px;
+        if root.icon != "": Icon {
+            width: 14px;
+            height: 14px;
+            y: (parent.height - 14px) / 2;
+            stroke: root.ink;
+            commands: root.icon;
+        }
+        Text { text: root.text; color: root.ink; font-size: root.font-size; vertical-alignment: center; }
+    }
+}
+
+/// A link-looking button ("Change", "Reset to defaults").
+export component LinkButton inherits Rectangle {
+    in property <string> text;
+    in property <color> tint: Theme.focus;
+    callback clicked;
+    width: t.preferred-width + 4px;
+    height: t.preferred-height + 4px;
+    border-radius: 4px;
+    t := Text {
+        text: root.text;
+        color: ta.has-hover ? Theme.text : root.tint;
+        font-size: 12px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => { root.clicked(); }
 }

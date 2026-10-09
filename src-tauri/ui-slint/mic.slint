@@ -1,0 +1,573 @@
+// The Microphone view: the chain of steps your voice goes through, the selected step's settings,
+// live levels, and a record-and-play-back test.
+
+import { Theme, Px, Icon, Switch, Card, SliderRow, ValueField, TextButton, LinkButton } from "common.slint";
+import { EqEditor, EqData } from "eq.slint";
+
+export struct ChainTab {
+    id: string,
+    name: string,
+    state: string, // "−12 dB noise", "Off", "Open"
+    kind: int, // 0 ok, 1 off, 2 warn
+}
+
+export struct MicData {
+    muted: bool,
+    listen: bool,
+    route-from: string, // "" = not connected
+    route-auto: bool,
+    route-to: string, // "" = no Virtual Mic cable
+    input-text: string, // the Mic input step's explanation
+    virtual-mic: string,
+    // Steps on or off.
+    denoise-on: bool,
+    gate-on: bool,
+    eq-on: bool,
+    comp-on: bool,
+    limiter-on: bool,
+    // Noise removal.
+    strength: float,
+    post-filter: float,
+    low-latency: bool,
+    // Noise gate.
+    threshold: float,
+    range: float,
+    attack: float,
+    hold: float,
+    release: float,
+    // Compressor.
+    comp-threshold: float,
+    ratio: float,
+    knee: float,
+    makeup: float,
+    comp-attack: float,
+    comp-release: float,
+    // Output.
+    gain: float,
+    // Live.
+    limiter-now: string,
+    in-pct: float, // 0..1 on the −60..0 dB scale
+    in-text: string,
+    out-pct: float,
+    out-text: string,
+    gr-pct: float, // compressor gain reduction, 0..1 of 20 dB
+    gr-text: string,
+    gate-marker: float, // threshold on the −60..0 scale, 0..1
+    gate-level: float, // input on the gate's −80..0 scale, 0..1
+    gate-caption: string,
+    // Mic test.
+    test-phase: string, // "idle", "recording", "playing"
+    test-progress: float,
+    test-recorded: bool,
+    test-note: string,
+}
+
+global Fmt {
+    /// "+3 dB", "−12 dB", "0 dB" for whole dB values.
+    public pure function db-int(v: float) -> string {
+        (v > 0 ? "+" : v < 0 ? "−" : "") + abs(round(v)) + " dB"
+    }
+}
+
+/// A section of the step card, with a line above it.
+component Section inherits VerticalLayout {
+    in property <bool> dim;
+    padding-left: 16px;
+    padding-right: 16px;
+    padding-top: 12px;
+    padding-bottom: 12px;
+    spacing: 8px;
+    opacity: dim ? 0.5 : 1;
+    Rectangle {
+        height: 0;
+        Rectangle { x: -16px; y: -12px; width: parent.width + 32px; height: Px.hair(); background: Theme.line; }
+    }
+    @children
+}
+
+component Hint inherits Text {
+    color: Theme.muted;
+    font-size: 12px;
+    wrap: word-wrap;
+}
+
+/// One bar of the Levels card: label and value, then a 6px bar.
+component LevelBar inherits VerticalLayout {
+    in property <string> label;
+    in property <string> value;
+    in property <float> pct;
+    in property <bool> reverse; // gain reduction, grows from the right in Game's colour
+    in property <float> marker: -1; // the gate threshold, 0..1, or -1
+    spacing: 4px;
+    HorizontalLayout {
+        Text { text: root.label; color: Theme.muted; font-size: 12px; horizontal-stretch: 1; }
+        Text { text: root.value; color: Theme.text; font-family: Theme.font-num; font-size: 12px; }
+    }
+    bar := Rectangle {
+        height: 6px;
+        border-radius: 3px;
+        background: Theme.well;
+        clip: false;
+        if !root.reverse: Rectangle {
+            x: 0;
+            width: parent.width * root.pct;
+            border-radius: 3px;
+            clip: true;
+            // The usual green/yellow/red, fixed to the bar, revealed up to the level.
+            Rectangle {
+                x: 0;
+                width: bar.width;
+                background: @linear-gradient(90deg, Theme.ok 0%, Theme.ok 70%, Theme.warn 70%, Theme.warn 85%, Theme.hot 85%, Theme.hot 100%);
+            }
+        }
+        if root.reverse: Rectangle {
+            x: parent.width * (1 - root.pct);
+            width: parent.width * root.pct;
+            border-radius: 3px;
+            background: Theme.game;
+        }
+        if root.marker >= 0: Rectangle {
+            x: parent.width * root.marker - 1px;
+            y: -3px;
+            width: 2px;
+            height: parent.height + 6px;
+            border-radius: 1px;
+            background: Theme.text;
+        }
+    }
+}
+
+export component MicView inherits VerticalLayout {
+    in property <MicData> mic;
+    in property <[ChainTab]> chain;
+    in-out property <string> selected: "denoise";
+    in property <EqData> eq;
+    in-out property <int> eq-selected: -1;
+    callback set(string, float); // a setting by name (see mainwin.rs)
+    callback toggle(string, bool); // a step on or off: denoise, gate, eq, compressor, limiter, low_latency
+    callback mute;
+    callback listen;
+    callback test(string); // record, play, play_original, stop
+    callback open-devices;
+    callback eq-preset(string);
+    callback eq-pick(float, float, float, float, float) -> int;
+    callback eq-drag(int, float, float, float, float);
+    callback eq-widen(int, bool);
+    spacing: 16px;
+
+    // Title, explanation, Listen and Mute.
+    HorizontalLayout {
+        spacing: 16px;
+        VerticalLayout {
+            spacing: 2px;
+            horizontal-stretch: 1;
+            Text { text: "Microphone"; color: Theme.text; font-size: 20px; font-weight: 600; }
+            Text { text: "Your voice goes through each step, left to right, before Discord, OBS or TeamSpeak hear it."; color: Theme.muted; font-size: 13px; }
+        }
+        VerticalLayout {
+            alignment: start;
+            HorizontalLayout {
+                spacing: 8px;
+                height: 30px;
+                TextButton {
+                    text: "Listen to my mic";
+                    icon: "M2.5 10V8a5.5 5.5 0 0 1 11 0v2 M3 9.5h1a1 1 0 0 1 1 1v2.5a1 1 0 0 1 -1 1h-1a1 1 0 0 1 -1 -1v-2.5a1 1 0 0 1 1 -1z M12 9.5h1a1 1 0 0 1 1 1v2.5a1 1 0 0 1 -1 1h-1a1 1 0 0 1 -1 -1v-2.5a1 1 0 0 1 1 -1z";
+                    on: root.mic.listen;
+                    on-color: Theme.mic;
+                    clicked => { root.listen(); }
+                }
+                TextButton {
+                    text: root.mic.muted ? "Mic muted" : "Mute mic";
+                    icon: "M7 1.5h2a1.5 1.5 0 0 1 1.5 1.5v5a1.5 1.5 0 0 1 -1.5 1.5h-2a1.5 1.5 0 0 1 -1.5 -1.5v-5a1.5 1.5 0 0 1 1.5 -1.5z M3 7.5a5 5 0 0 0 10 0M8 12.5V15";
+                    on: root.mic.muted;
+                    clicked => { root.mute(); }
+                }
+            }
+        }
+    }
+
+    // The chain: one panel of equal tabs.
+    Rectangle {
+        height: 52px;
+        background: Theme.panel;
+        border-width: Px.hair();
+        border-color: Theme.line;
+        border-radius: 8px;
+        clip: true;
+        chain-row := HorizontalLayout {
+            for t[i] in root.chain: Rectangle {
+                property <bool> sel: t.id == root.selected;
+                // Equal tabs, whatever they say.
+                width: chain-row.width / max(1, root.chain.length);
+                background: sel ? Theme.raised : tab-ta.has-hover ? Theme.raised.mix(Theme.panel, 0.55) : transparent;
+                if i > 0: Rectangle { x: 0; width: Px.hair(); background: Theme.line; }
+                if sel: Rectangle { y: parent.height - 2px; height: 2px; background: Theme.mic; }
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 9px;
+                    Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        y: (parent.height - 8px) / 2;
+                        border-radius: 4px;
+                        background: t.kind == 1 ? Theme.line-strong : t.kind == 2 ? Theme.warn : Theme.ok;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 1px;
+                        min-width: 0;
+                        Text { text: t.name; color: t.kind == 1 ? Theme.faint : Theme.text; font-size: 13px; font-weight: 500; overflow: elide; }
+                        Text {
+                            text: t.state;
+                            color: t.kind == 2 ? Theme.warn : t.kind == 1 ? Theme.faint : Theme.muted;
+                            font-family: Theme.font-num;
+                            font-size: 11px;
+                            overflow: elide;
+                        }
+                    }
+                }
+                tab-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.selected = t.id; }
+                }
+                accessible-role: tab;
+                accessible-label: t.name + ", " + t.state;
+                accessible-item-selected: sel;
+                accessible-action-default => { root.selected = t.id; }
+            }
+        }
+    }
+
+    // From your mic → to the Virtual Mic.
+    HorizontalLayout {
+        spacing: 0;
+        alignment: start;
+        Text { text: "From "; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
+        Text {
+            text: root.mic.route-from != "" ? root.mic.route-from : "your mic, not connected right now";
+            color: root.mic.route-from != "" ? Theme.text : Theme.muted;
+            font-size: 12px;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+        Text { text: (root.mic.route-auto && root.mic.route-from != "" ? " (automatic)" : "") + " → To "; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
+        Text {
+            text: root.mic.route-to != "" ? root.mic.route-to : "no Virtual Mic cable";
+            color: root.mic.route-to != "" ? Theme.text : Theme.hot;
+            font-size: 12px;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+        Text { text: root.mic.route-to != "" ? ", which apps pick as their mic " : " "; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
+        LinkButton { text: "Change"; clicked => { root.open-devices(); } }
+    }
+
+    // The selected step, and Levels + the mic test beside it (1.25 : 1).
+    detail := HorizontalLayout {
+        spacing: 12px;
+        alignment: start;
+        // The step card.
+        VerticalLayout {
+            width: (detail.width - 12px) * 1.25 / 2.25;
+            alignment: start;
+            Card {
+                property <string> step: root.selected;
+                property <bool> on: step == "denoise" ? root.mic.denoise-on
+                    : step == "gate" ? root.mic.gate-on
+                    : step == "eq" ? root.mic.eq-on
+                    : step == "comp" ? root.mic.comp-on
+                    : step == "limiter" ? root.mic.limiter-on : true;
+                property <bool> switchable: step == "denoise" || step == "gate" || step == "eq" || step == "comp" || step == "limiter";
+                title: step == "input" ? "Mic input"
+                    : step == "denoise" ? "Noise removal"
+                    : step == "gate" ? "Noise gate"
+                    : step == "eq" ? "Equalizer"
+                    : step == "comp" ? "Compressor"
+                    : step == "limiter" ? "Limiter" : "Virtual mic";
+                help: step == "input" ? "The physical microphone everything below starts from."
+                    : step == "denoise" ? "DeepFilterNet3 removes keyboards, fans and background voices while you talk."
+                    : step == "gate" ? "Cuts room noise between words. Stay quiet for a moment, then set the threshold just above the grey noise bar."
+                    : step == "eq" ? "Shapes your voice: cut rumble, add clarity."
+                    : step == "comp" ? "Evens out loud and quiet speech so you stay at one level in Discord."
+                    : step == "limiter" ? "Catches sudden peaks, like a laugh or a desk bump, at −1 dBFS so the virtual mic never clips. Normal speech passes untouched and it adds no delay."
+                    : "What Discord, OBS or TeamSpeak hear.";
+                has-switch: switchable;
+                switch-on: on;
+                switch-label: self.title + " on or off";
+                switched(v) => { root.toggle(step == "comp" ? "compressor" : step, v); }
+
+                // Mic input.
+                if step == "input": Section {
+                    Hint { text: root.mic.input-text; }
+                    HorizontalLayout {
+                        alignment: start;
+                        height: 28px;
+                        TextButton { text: "Change in Settings"; clicked => { root.open-devices(); } }
+                    }
+                }
+                // Noise removal.
+                if step == "denoise": Section {
+                    dim: !root.mic.denoise-on;
+                    SliderRow {
+                        label: "Strength";
+                        shown: root.mic.strength >= 100 ? "Max" : round(root.mic.strength) + " dB";
+                        minimum: 6;
+                        maximum: 100;
+                        value: root.mic.strength;
+                        changed(v) => { root.set("strength", v); }
+                    }
+                }
+                if step == "denoise": Section {
+                    dim: !root.mic.denoise-on;
+                    SliderRow {
+                        label: "Residual cleanup";
+                        shown: root.mic.post-filter == 0 ? "Off" : round(root.mic.post-filter * 1000) / 1000;
+                        minimum: 0;
+                        maximum: 0.05;
+                        step: 0.005;
+                        value: root.mic.post-filter;
+                        changed(v) => { root.set("post_filter", v); }
+                    }
+                }
+                if step == "denoise": Section {
+                    dim: !root.mic.denoise-on;
+                    Switch {
+                        checked: root.mic.low-latency;
+                        text: "Low-latency model";
+                        toggled(v) => { root.toggle("low_latency", v); }
+                    }
+                    Hint { text: root.mic.low-latency ? "Model delay 10 ms. Slightly less clean and uses more CPU." : "Model delay 30 ms. The low-latency model saves 20 ms."; }
+                }
+                // Noise gate: the threshold slider's track is the live input meter.
+                if step == "gate": Section {
+                    dim: !root.mic.gate-on;
+                    HorizontalLayout {
+                        Text { text: "Threshold"; color: Theme.muted; font-size: 13px; horizontal-stretch: 1; }
+                        Text { text: Fmt.db-int(root.mic.threshold); color: Theme.text; font-family: Theme.font-num; font-size: 13px; }
+                    }
+                    gate := Rectangle {
+                        property <float> th: (root.mic.threshold + 80) / 80;
+                        height: 14px;
+                        border-radius: 3px;
+                        background: Theme.well;
+                        // What passes (above the threshold) is tinted.
+                        Rectangle {
+                            x: parent.width * gate.th;
+                            width: parent.width * (1 - gate.th);
+                            border-radius: 3px;
+                            background: Theme.mic.with-alpha(0.18);
+                        }
+                        // The current level.
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * root.mic.gate-level;
+                            border-radius: 3px;
+                            background: Theme.line-strong;
+                        }
+                        // The threshold.
+                        Rectangle {
+                            x: parent.width * gate.th - 1px;
+                            y: -3px;
+                            width: 3px;
+                            height: parent.height + 6px;
+                            border-radius: 1px;
+                            background: Theme.text;
+                        }
+                        TouchArea {
+                            mouse-cursor: ew-resize;
+                            pointer-event(e) => {
+                                if e.kind == PointerEventKind.down { root.set("threshold", round(max(0, min(1, self.mouse-x / gate.width)) * 80 - 80)); }
+                            }
+                            moved => {
+                                if self.pressed { root.set("threshold", round(max(0, min(1, self.mouse-x / gate.width)) * 80 - 80)); }
+                            }
+                            scroll-event(e) => {
+                                root.set("threshold", max(-80, min(0, root.mic.threshold + (e.delta-y > 0 ? 1 : -1))));
+                                accept
+                            }
+                        }
+                        accessible-role: slider;
+                        accessible-label: "Gate threshold";
+                        accessible-value: root.mic.threshold;
+                        accessible-value-minimum: -80;
+                        accessible-value-maximum: 0;
+                        accessible-action-set-value(v) => { root.set("threshold", max(-80, min(0, v.to-float()))); }
+                    }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        HorizontalLayout {
+                            spacing: 6px;
+                            horizontal-stretch: 1;
+                            Rectangle { width: 8px; height: 8px; y: (parent.height - 8px) / 2; border-radius: 2px; background: Theme.line-strong; }
+                            Text { text: root.mic.gate-caption; color: Theme.faint; font-size: 12px; overflow: elide; }
+                        }
+                        Text { text: "−80 … 0"; color: Theme.faint; font-family: Theme.font-num; font-size: 12px; }
+                    }
+                }
+                if step == "gate": Section {
+                    dim: !root.mic.gate-on;
+                    SliderRow {
+                        label: "How much to cut when closed";
+                        shown: Fmt.db-int(root.mic.range);
+                        minimum: -80;
+                        maximum: -3;
+                        value: root.mic.range;
+                        changed(v) => { root.set("range", v); }
+                    }
+                }
+                if step == "gate": Section {
+                    dim: !root.mic.gate-on;
+                    HorizontalLayout {
+                        Text { text: "Timing"; color: Theme.muted; font-size: 13px; horizontal-stretch: 1; }
+                        LinkButton { text: "Reset to defaults"; tint: Theme.muted; clicked => { root.set("gate_defaults", 0); } }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        ValueField { label: "Attack"; unit: "ms"; value: root.mic.attack; minimum: 0.5; maximum: 50; step: 0.5; changed(v) => { root.set("attack", v); } }
+                        ValueField { label: "Hold"; unit: "ms"; value: root.mic.hold; minimum: 0; maximum: 1000; step: 10; changed(v) => { root.set("hold", v); } }
+                        ValueField { label: "Release"; unit: "ms"; value: root.mic.release; minimum: 10; maximum: 1000; step: 10; changed(v) => { root.set("release", v); } }
+                    }
+                    Text { text: "Drag a value up or down, or type a new one."; color: Theme.faint; font-size: 12px; }
+                }
+                // Equalizer.
+                if step == "eq": Section {
+                    EqEditor {
+                        eq: root.eq;
+                        tint: Theme.mic;
+                        show-switch: false;
+                        selected <=> root.eq-selected;
+                        preset(p) => { root.eq-preset(p); }
+                        pick(x, y, w, h, r) => { root.eq-pick(x, y, w, h, r) }
+                        drag(i, x, y, w, h) => { root.eq-drag(i, x, y, w, h); }
+                        widen(i, n) => { root.eq-widen(i, n); }
+                    }
+                }
+                // Compressor.
+                if step == "comp": Section {
+                    dim: !root.mic.comp-on;
+                    SliderRow { label: "Threshold"; shown: Fmt.db-int(root.mic.comp-threshold); minimum: -60; maximum: 0; value: root.mic.comp-threshold; changed(v) => { root.set("comp_threshold", v); } }
+                }
+                if step == "comp": Section {
+                    dim: !root.mic.comp-on;
+                    SliderRow { label: "Ratio"; shown: (round(root.mic.ratio * 10) / 10) + ":1"; minimum: 1; maximum: 20; step: 0.1; value: root.mic.ratio; changed(v) => { root.set("ratio", v); } }
+                }
+                if step == "comp": Section {
+                    dim: !root.mic.comp-on;
+                    SliderRow { label: "Knee"; shown: Fmt.db-int(root.mic.knee); minimum: 0; maximum: 24; value: root.mic.knee; changed(v) => { root.set("knee", v); } }
+                }
+                if step == "comp": Section {
+                    dim: !root.mic.comp-on;
+                    SliderRow { label: "Makeup gain"; shown: Fmt.db-int(root.mic.makeup); minimum: 0; maximum: 24; step: 0.5; value: root.mic.makeup; changed(v) => { root.set("makeup", v); } }
+                }
+                if step == "comp": Section {
+                    dim: !root.mic.comp-on;
+                    Text { text: "Timing"; color: Theme.muted; font-size: 13px; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        ValueField { label: "Attack"; unit: "ms"; value: root.mic.comp-attack; minimum: 0.1; maximum: 100; step: 0.1; changed(v) => { root.set("comp_attack", v); } }
+                        ValueField { label: "Release"; unit: "ms"; value: root.mic.comp-release; minimum: 10; maximum: 1000; step: 10; changed(v) => { root.set("comp_release", v); } }
+                    }
+                    Text { text: "Drag a value up or down, or type a new one."; color: Theme.faint; font-size: 12px; }
+                }
+                // Limiter.
+                if step == "limiter": Section {
+                    HorizontalLayout {
+                        Text { text: "Turning peaks down by"; color: Theme.muted; font-size: 13px; horizontal-stretch: 1; }
+                        Text { text: root.mic.limiter-now; color: Theme.text; font-family: Theme.font-num; font-size: 13px; }
+                    }
+                    if !root.mic.limiter-on: Text { text: "Off: loud peaks can clip and distort what others hear."; color: Theme.warn; font-size: 12px; }
+                }
+                // Virtual mic.
+                if step == "output": Section {
+                    Hint { text: "In Discord, OBS or TeamSpeak choose " + root.mic.virtual-mic + " as the microphone, and turn off their own noise suppression."; }
+                }
+                if step == "output": Section {
+                    SliderRow { label: "Output gain"; shown: Fmt.db-int(root.mic.gain); minimum: -20; maximum: 20; step: 0.5; value: root.mic.gain; changed(v) => { root.set("gain", v); } }
+                }
+            }
+        }
+        // Levels and the mic test.
+        VerticalLayout {
+            spacing: 12px;
+            alignment: start;
+            horizontal-stretch: 1;
+            Card {
+                title: "Levels";
+                VerticalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    padding-bottom: 14px;
+                    spacing: 10px;
+                    LevelBar { label: "Mic input"; value: root.mic.in-text; pct: root.mic.in-pct; marker: root.mic.gate-on ? root.mic.gate-marker : -1; }
+                    LevelBar { label: "Virtual mic output"; value: root.mic.out-text; pct: root.mic.out-pct; }
+                    LevelBar { label: "Compressor gain reduction"; value: root.mic.gr-text; pct: root.mic.gr-pct; reverse: true; }
+                    HorizontalLayout {
+                        for t in ["−60", "−48", "−36", "−24", "−12", "0 dB"]: Text {
+                            text: t;
+                            color: Theme.faint;
+                            font-family: Theme.font-num;
+                            font-size: 10px;
+                            horizontal-stretch: 1;
+                            horizontal-alignment: t == "−60" ? left : t == "0 dB" ? right : center;
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Rectangle { width: 2px; height: 10px; y: (parent.height - 10px) / 2; border-radius: 1px; background: Theme.text; }
+                        Text { text: "Gate threshold"; color: Theme.faint; font-size: 11px; }
+                    }
+                }
+            }
+            Card {
+                title: "Test your mic";
+                help: "Record 5 seconds, then compare the filtered and original versions in your headphones.";
+                VerticalLayout {
+                    padding-left: 16px;
+                    padding-right: 16px;
+                    padding-bottom: 14px;
+                    spacing: 8px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        height: 30px;
+                        property <bool> busy: root.mic.test-phase != "idle";
+                        TextButton {
+                            text: root.mic.test-phase == "recording" ? "■ Stop · " + ceil(5 * (1 - root.mic.test-progress)) + " s"
+                                : root.mic.test-phase == "playing" ? "■ Stop" : "● Record 5 s";
+                            on: true;
+                            on-color: Theme.hot;
+                            enabled: parent.busy || !root.mic.muted;
+                            clicked => { if self.enabled { root.test(parent.busy ? "stop" : "record"); } }
+                        }
+                        TextButton {
+                            horizontal-stretch: 1;
+                            text: "Filtered";
+                            icon: "M5 3.5v9l7.5-4.5z";
+                            enabled: !parent.busy && root.mic.test-recorded;
+                            clicked => { if self.enabled { root.test("play"); } }
+                        }
+                        TextButton {
+                            horizontal-stretch: 1;
+                            text: "Original";
+                            icon: "M5 3.5v9l7.5-4.5z";
+                            enabled: !parent.busy && root.mic.test-recorded;
+                            clicked => { if self.enabled { root.test("play_original"); } }
+                        }
+                    }
+                    Rectangle {
+                        height: 4px;
+                        border-radius: 2px;
+                        background: Theme.well;
+                        clip: true;
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * (root.mic.test-phase != "idle" ? root.mic.test-progress : 0);
+                            background: root.mic.test-phase == "recording" ? Theme.hot : Theme.mic;
+                        }
+                    }
+                    Text { text: root.mic.test-note; color: Theme.faint; font-size: 12px; wrap: word-wrap; }
+                }
+            }
+        }
+    }
+}
