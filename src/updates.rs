@@ -437,6 +437,19 @@ mod tests {
         assert!(newer(&manifest, "0.0.1").unwrap().is_some());
     }
 
+    /// Checks an installer signed by examples/sign_update.rs against the app's release key:
+    /// SMOWAUDIO_SIGNED=<installer> SMOWAUDIO_SIGNED_VERSION=<version> cargo test -- --ignored
+    #[test]
+    #[ignore = "needs an installer signed with the release key"]
+    fn a_release_signature_verifies() {
+        let file = std::env::var("SMOWAUDIO_SIGNED").unwrap();
+        let version = std::env::var("SMOWAUDIO_SIGNED_VERSION").unwrap();
+        let bytes = std::fs::read(&file).unwrap();
+        let signature = std::fs::read_to_string(format!("{file}.sig")).unwrap();
+        verify(PUBLIC_KEY, &bytes, &signature, &version).unwrap();
+        assert!(verify(PUBLIC_KEY, b"something else", &signature, &version).is_err());
+    }
+
     #[test]
     fn the_release_key_decodes() {
         let raw = base64::engine::general_purpose::STANDARD.decode(PUBLIC_KEY).unwrap();

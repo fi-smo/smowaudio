@@ -36,6 +36,7 @@ slint = { version = "1.18", default-features = false, features = ["std", "compat
 [dev-dependencies]
 # Signs release installers (examples/sign_update.rs) the way Tauri's CLI did.
 minisign = "0.7"
+scrypt = "0.11"
 
 [dependencies.windows]
 version = "0.62"
