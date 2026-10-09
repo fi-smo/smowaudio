@@ -1,7 +1,7 @@
 // The Mixer view: four channel strips into Master, and the Mic strip, each with a dB scale, two
 // dotted meters, a fader, a readout and a mute + feature button.
 
-import { Theme, Px, Icon, Tape, Btn, SpeakerIcon } from "common.slint";
+import { Theme, Px, Icon, Tape, Btn, SpeakerIcon, Glyph, Glyphs } from "common.slint";
 import { EqEditor, EqData } from "eq.slint";
 
 /// An app on a strip or a card: its own icon, or its first letter until there is one.
@@ -379,12 +379,10 @@ export component Strip inherits Rectangle {
                 label: (root.data.muted ? "Unmute " : "Mute ") + root.data.name;
                 clicked => { root.mute(); }
                 SpeakerIcon {
-                    x: Px.align((parent.width - 15px) / 2, parent.absolute-position.x);
-                    y: Px.align((parent.height - 15px) / 2, parent.absolute-position.y);
-                    width: 15px;
-                    height: 15px;
+                    width: parent.width;
+                    height: parent.height;
                     off: root.data.muted;
-                    stroke: parent.ink;
+                    tint: parent.ink;
                 }
             }
             FeatureButton {
@@ -523,15 +521,11 @@ export component MixerView inherits VerticalLayout {
                 Rectangle {
                     width: 6px;
                     horizontal-stretch: 0;
-                    Icon {
-                        y: (parent.height - 10px) / 2;
-                        width: 6px;
-                        height: 10px;
-                        size: 10;
-                        viewbox-width: 6;
-                        stroke: Theme.line-strong;
-                        stroke-width: 1.5px;
-                        commands: "M1 1 L5 5 L1 9";
+                    Glyph {
+                        height: parent.height;
+                        glyph: Glyphs.chevron-right;
+                        font-size: 10px;
+                        tint: Theme.line-strong;
                     }
                 }
                 Strip {

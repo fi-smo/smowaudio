@@ -1,7 +1,7 @@
 // The Apps view: a column per channel holding the apps that play there. Drag a card to another
 // column (or use its Move menu) to route the app there; Windows remembers it.
 
-import { Theme, Px, Icon, Tape } from "common.slint";
+import { Theme, Px, Icon, Tape, Glyph, Glyphs } from "common.slint";
 import { AppIcon, AppBadge } from "mixer.slint";
 
 export struct AppCardData {
@@ -192,13 +192,11 @@ export component AppCard inherits Rectangle {
                     height: 28px;
                     border-radius: 6px;
                     background: move-ta.has-hover ? Theme.panel : transparent;
-                    Icon {
-                        x: Px.align((parent.width - 15px) / 2, parent.absolute-position.x);
-                        y: Px.align((parent.height - 15px) / 2, parent.absolute-position.y);
-                        width: 15px;
-                        height: 15px;
-                        stroke: move-ta.has-hover ? Theme.text : Theme.muted;
-                        commands: "M3 5h9M9.5 2.5 12 5 9.5 7.5M13 11H4M6.5 8.5 4 11l2.5 2.5";
+                    Glyph {
+                        width: parent.width;
+                        height: parent.height;
+                        glyph: Glyphs.move;
+                        tint: move-ta.has-hover ? Theme.text : Theme.muted;
                     }
                     move-ta := TouchArea {
                         mouse-cursor: pointer;

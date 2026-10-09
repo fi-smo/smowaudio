@@ -277,14 +277,47 @@ export component HFader inherits Rectangle {
     }
 }
 
-export component SpeakerIcon inherits Icon {
-    in property <bool> off;
-    commands: off ? "M2.5 6h2.5l3.5-3v10l-3.5-3h-2.5z M11 6l3.5 4M14.5 6 11 10"
-        : "M2.5 6h2.5l3.5-3v10l-3.5-3h-2.5z M11 5.5a3.5 3.5 0 0 1 0 5M12.8 3.5a6.2 6.2 0 0 1 0 9";
+/// A Windows 11 icon from Segoe Fluent Icons. The font is hinted for small sizes, so unlike a
+/// drawn path it stays sharp at 125 % and 150 % scaling. `tint` sets its colour.
+export component Glyph inherits Text {
+    in property <string> glyph;
+    in property <brush> tint: Theme.text;
+    text: glyph;
+    font-family: "Segoe Fluent Icons";
+    font-size: 16px;
+    color: tint;
+    horizontal-alignment: center;
+    vertical-alignment: center;
 }
 
-export component HeadphonesIcon inherits Icon {
-    commands: "M2.5 10V8a5.5 5.5 0 0 1 11 0v2 M3 9.5h1a1 1 0 0 1 1 1v2.5a1 1 0 0 1 -1 1h-1a1 1 0 0 1 -1 -1v-2.5a1 1 0 0 1 1 -1z M12 9.5h1a1 1 0 0 1 1 1v2.5a1 1 0 0 1 -1 1h-1a1 1 0 0 1 -1 -1v-2.5a1 1 0 0 1 1 -1z";
+/// The glyphs in use, by what they show.
+export global Glyphs {
+    out property <string> speaker: "\u{E767}";
+    out property <string> speaker-off: "\u{E74F}";
+    out property <string> headphones: "\u{E7F6}";
+    out property <string> mic: "\u{E720}";
+    out property <string> play: "\u{E768}";
+    out property <string> move: "\u{E8AB}";
+    out property <string> chevron-down: "\u{E96E}";
+    out property <string> chevron-up: "\u{E96D}";
+    out property <string> chevron-right: "\u{E970}";
+    out property <string> apps: "\u{E8A9}";
+    out property <string> settings: "\u{E713}";
+}
+
+export component SpeakerIcon inherits Glyph {
+    in property <bool> off;
+    glyph: off ? Glyphs.speaker-off : Glyphs.speaker;
+}
+
+export component HeadphonesIcon inherits Glyph {
+    glyph: Glyphs.headphones;
+    font-size: 14px;
+}
+
+export component MicIcon inherits Glyph {
+    glyph: Glyphs.mic;
+    font-size: 14px;
 }
 
 /// An on/off switch (36×20 track, 12px knob), optionally with a label after it.
@@ -626,7 +659,7 @@ export component ValueField inherits Rectangle {
 /// A plain text button in the old `.btn` look, with an optional 14px icon before the text.
 export component TextButton inherits Btn {
     in property <string> text;
-    in property <string> icon; // 16x16 path, or ""
+    in property <string> icon; // a Glyphs character, or ""
     in property <length> font-size: 12px;
     in property <bool> enabled: true;
     label: text;
@@ -639,12 +672,11 @@ export component TextButton inherits Btn {
         spacing: 6px;
         padding-left: 10px;
         padding-right: 10px;
-        if root.icon != "": Icon {
+        if root.icon != "": Glyph {
             width: 14px;
-            height: 14px;
-            y: (parent.height - 14px) / 2;
-            stroke: root.ink;
-            commands: root.icon;
+            glyph: root.icon;
+            font-size: 14px;
+            tint: root.ink;
         }
         Text { text: root.text; color: root.ink; font-size: root.font-size; vertical-alignment: center; }
     }

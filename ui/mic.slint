@@ -1,7 +1,7 @@
 // The Microphone view: the chain of steps your voice goes through, the selected step's settings,
 // live levels, and a record-and-play-back test.
 
-import { Theme, Px, Icon, Switch, Card, SliderRow, ValueField, TextButton, LinkButton } from "common.slint";
+import { Theme, Px, Icon, Switch, Card, SliderRow, ValueField, TextButton, LinkButton, Glyph, Glyphs } from "common.slint";
 import { EqEditor, EqData } from "eq.slint";
 
 export struct ChainTab {
@@ -174,14 +174,14 @@ export component MicView inherits VerticalLayout {
                 height: 30px;
                 TextButton {
                     text: "Listen to my mic";
-                    icon: "M2.5 10V8a5.5 5.5 0 0 1 11 0v2 M3 9.5h1a1 1 0 0 1 1 1v2.5a1 1 0 0 1 -1 1h-1a1 1 0 0 1 -1 -1v-2.5a1 1 0 0 1 1 -1z M12 9.5h1a1 1 0 0 1 1 1v2.5a1 1 0 0 1 -1 1h-1a1 1 0 0 1 -1 -1v-2.5a1 1 0 0 1 1 -1z";
+                    icon: Glyphs.headphones;
                     on: root.mic.listen;
                     on-color: Theme.mic;
                     clicked => { root.listen(); }
                 }
                 TextButton {
                     text: root.mic.muted ? "Mic muted" : "Mute mic";
-                    icon: "M7 1.5h2a1.5 1.5 0 0 1 1.5 1.5v5a1.5 1.5 0 0 1 -1.5 1.5h-2a1.5 1.5 0 0 1 -1.5 -1.5v-5a1.5 1.5 0 0 1 1.5 -1.5z M3 7.5a5 5 0 0 0 10 0M8 12.5V15";
+                    icon: Glyphs.mic;
                     on: root.mic.muted;
                     clicked => { root.mute(); }
                 }
@@ -545,14 +545,14 @@ export component MicView inherits VerticalLayout {
                         TextButton {
                             horizontal-stretch: 1;
                             text: "Filtered";
-                            icon: "M5 3.5v9l7.5-4.5z";
+                            icon: Glyphs.play;
                             enabled: !parent.busy && root.mic.test-recorded;
                             clicked => { if self.enabled { root.test("play"); } }
                         }
                         TextButton {
                             horizontal-stretch: 1;
                             text: "Original";
-                            icon: "M5 3.5v9l7.5-4.5z";
+                            icon: Glyphs.play;
                             enabled: !parent.busy && root.mic.test-recorded;
                             clicked => { if self.enabled { root.test("play_original"); } }
                         }

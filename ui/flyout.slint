@@ -1,7 +1,7 @@
 // Tray flyout: quick channel volumes, the output device and mic controls. A native (Slint) version
 // of the old WebView flyout, with the same sizes and colours as ui/style.css.
 
-import { Theme, Px, Icon, Tape, Btn, HMeter, HFader, SpeakerIcon, HeadphonesIcon } from "common.slint";
+import { Theme, Px, Icon, Tape, Btn, HMeter, HFader, SpeakerIcon, HeadphonesIcon, Glyph, Glyphs, MicIcon } from "common.slint";
 
 // ---------- data ----------
 export struct Row {
@@ -86,12 +86,10 @@ component ChannelRow inherits Rectangle {
         label: (data.muted ? "Unmute " : "Mute ") + data.name;
         clicked => { root.mute(); }
         SpeakerIcon {
-            x: Px.align((parent.width - 15px) / 2, parent.absolute-position.x);
-            y: Px.align((parent.height - 15px) / 2, parent.absolute-position.y);
-            width: 15px;
-            height: 15px;
+            width: parent.width;
+            height: parent.height;
             off: data.muted;
-            stroke: parent.ink;
+            tint: parent.ink;
         }
     }
 }
@@ -234,7 +232,7 @@ export component FlyoutWindow inherits Window {
                         width: 14px;
                         height: 14px;
                         y: Px.align((parent.height - 14px) / 2, parent.absolute-position.y);
-                        stroke: Theme.muted;
+                        tint: Theme.muted;
                     }
                     Text {
                         text: "Output";
@@ -252,14 +250,11 @@ export component FlyoutWindow inherits Window {
                         overflow: elide;
                         horizontal-stretch: 1;
                     }
-                    Icon {
-                        size: 12;
+                    Glyph {
                         width: 12px;
-                        height: 12px;
-                        y: Px.align((parent.height - 12px) / 2, parent.absolute-position.y);
-                        stroke: Theme.muted;
-                        stroke-width: 1.6px;
-                        commands: root.outputs-open ? "M3 7.5 6 4.5 9 7.5" : "M3 4.5 6 7.5 9 4.5";
+                        glyph: root.outputs-open ? Glyphs.chevron-up : Glyphs.chevron-down;
+                        font-size: 12px;
+                        tint: Theme.muted;
                     }
                 }
                 out-ta := TouchArea {
@@ -335,12 +330,9 @@ export component FlyoutWindow inherits Window {
                         HorizontalLayout {
                             alignment: center;
                             spacing: 6px;
-                            Icon {
+                            MicIcon {
                                 width: 14px;
-                                height: 14px;
-                                y: Px.align((parent.height - 14px) / 2, parent.absolute-position.y);
-                                stroke: mic-mute.ink;
-                                commands: "M7 1.5h2a1.5 1.5 0 0 1 1.5 1.5v5a1.5 1.5 0 0 1 -1.5 1.5h-2a1.5 1.5 0 0 1 -1.5 -1.5v-5a1.5 1.5 0 0 1 1.5 -1.5z M3 7.5a5 5 0 0 0 10 0M8 12.5V15";
+                                tint: mic-mute.ink;
                             }
                             Text {
                                 text: "Mute";
@@ -362,7 +354,7 @@ export component FlyoutWindow inherits Window {
                                 width: 14px;
                                 height: 14px;
                                 y: Px.align((parent.height - 14px) / 2, parent.absolute-position.y);
-                                stroke: mic-listen.ink;
+                                tint: mic-listen.ink;
                             }
                             Text {
                                 text: "Listen";
@@ -396,14 +388,10 @@ export component FlyoutWindow inherits Window {
                 width: 32px;
                 label: "Settings";
                 clicked => { root.open-main("settings"); }
-                Text {
-                    // Windows 11's own Settings glyph, hinted for small sizes.
-                    text: "\u{E713}";
-                    font-family: "Segoe Fluent Icons";
-                    font-size: 16px;
-                    color: Theme.text;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+                Glyph {
+                    width: parent.width;
+                    height: parent.height;
+                    glyph: Glyphs.settings;
                 }
             }
         }

@@ -2,7 +2,7 @@
 // and the current view below it.
 
 import { ScrollView } from "std-widgets.slint";
-import { Theme, Px, Icon, TextButton } from "common.slint";
+import { Theme, Px, Icon, TextButton, Glyph, Glyphs } from "common.slint";
 import { MixerView, StripData } from "mixer.slint";
 import { EqData, EqBandData } from "eq.slint";
 import { AppsView, AppCardData, LaneData } from "apps.slint";
@@ -14,7 +14,8 @@ export { StripData, EqData, EqBandData, AppCardData, LaneData, MicData, ChainTab
 /// One section button in the rail: an icon over its name.
 component RailButton inherits Rectangle {
     in property <string> label;
-    in property <string> icon; // 24×24 path
+    in property <string> icon; // a Glyphs character
+    in property <string> path; // or a 20×20 drawing, for the one without a glyph
     in property <bool> current;
     callback clicked;
     height: 56px;
@@ -31,13 +32,20 @@ component RailButton inherits Rectangle {
         alignment: center;
         HorizontalLayout {
             alignment: center;
-            Icon {
-                size: 24;
+            if root.path != "": Icon {
+                size: 20;
                 width: 20px;
                 height: 20px;
                 stroke: current || ta.has-hover ? Theme.text : Theme.muted;
-                stroke-width: 1.6px;
-                commands: root.icon;
+                stroke-width: 1.2px;
+                commands: root.path;
+            }
+            if root.path == "": Glyph {
+                width: 20px;
+                height: 20px;
+                glyph: root.icon;
+                font-size: 20px;
+                tint: current || ta.has-hover ? Theme.text : Theme.muted;
             }
         }
         Text {
@@ -227,26 +235,26 @@ export component MainWindow inherits Window {
                 RailButton {
                     label: "Mixer";
                     current: root.view == "mixer";
-                    icon: "M6 4v16M12 4v16M18 4v16 M4.5 13h3a1 1 0 0 1 1 1v1a1 1 0 0 1 -1 1h-3a1 1 0 0 1 -1 -1v-1a1 1 0 0 1 1 -1z M10.5 7h3a1 1 0 0 1 1 1v1a1 1 0 0 1 -1 1h-3a1 1 0 0 1 -1 -1v-1a1 1 0 0 1 1 -1z M16.5 10h3a1 1 0 0 1 1 1v1a1 1 0 0 1 -1 1h-3a1 1 0 0 1 -1 -1v-1a1 1 0 0 1 1 -1z";
+                    path: "M5 3v14M10 3v14M15 3v14 M3.9 11h2.2a.7 .7 0 0 1 .7 .7v1.1a.7 .7 0 0 1 -.7 .7h-2.2a.7 .7 0 0 1 -.7 -.7v-1.1a.7 .7 0 0 1 .7 -.7z M8.9 5.5h2.2a.7 .7 0 0 1 .7 .7v1.1a.7 .7 0 0 1 -.7 .7h-2.2a.7 .7 0 0 1 -.7 -.7v-1.1a.7 .7 0 0 1 .7 -.7z M13.9 8.5h2.2a.7 .7 0 0 1 .7 .7v1.1a.7 .7 0 0 1 -.7 .7h-2.2a.7 .7 0 0 1 -.7 -.7v-1.1a.7 .7 0 0 1 .7 -.7z";
                     clicked => { root.go("mixer"); }
                 }
                 RailButton {
                     label: "Apps";
                     current: root.view == "apps";
-                    icon: "M5.5 4h3.5a1.5 1.5 0 0 1 1.5 1.5v3.5a1.5 1.5 0 0 1 -1.5 1.5h-3.5a1.5 1.5 0 0 1 -1.5 -1.5v-3.5a1.5 1.5 0 0 1 1.5 -1.5z M15 4h3.5a1.5 1.5 0 0 1 1.5 1.5v3.5a1.5 1.5 0 0 1 -1.5 1.5h-3.5a1.5 1.5 0 0 1 -1.5 -1.5v-3.5a1.5 1.5 0 0 1 1.5 -1.5z M5.5 13.5h3.5a1.5 1.5 0 0 1 1.5 1.5v3.5a1.5 1.5 0 0 1 -1.5 1.5h-3.5a1.5 1.5 0 0 1 -1.5 -1.5v-3.5a1.5 1.5 0 0 1 1.5 -1.5z M15 13.5h3.5a1.5 1.5 0 0 1 1.5 1.5v3.5a1.5 1.5 0 0 1 -1.5 1.5h-3.5a1.5 1.5 0 0 1 -1.5 -1.5v-3.5a1.5 1.5 0 0 1 1.5 -1.5z";
+                    icon: Glyphs.apps;
                     clicked => { root.go("apps"); }
                 }
                 RailButton {
                     label: "Mic";
                     current: root.view == "mic";
-                    icon: "M12 3a3 3 0 0 1 3 3v5a3 3 0 0 1 -6 0v-5a3 3 0 0 1 3 -3z M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7";
+                    icon: Glyphs.mic;
                     clicked => { root.go("mic"); }
                 }
                 Rectangle { }
                 RailButton {
                     label: "Settings";
                     current: root.view == "settings";
-                    icon: "M15 12a3 3 0 1 1 -6 0a3 3 0 1 1 6 0z M10.21 5.34L10.50 2.52L13.50 2.52L13.79 5.34L15.45 6.02L17.64 4.23L19.77 6.36L17.98 8.55L18.66 10.21L21.48 10.50L21.48 13.50L18.66 13.79L17.98 15.45L19.77 17.64L17.64 19.77L15.45 17.98L13.79 18.66L13.50 21.48L10.50 21.48L10.21 18.66L8.55 17.98L6.36 19.77L4.23 17.64L6.02 15.45L5.34 13.79L2.52 13.50L2.52 10.50L5.34 10.21L6.02 8.55L4.23 6.36L6.36 4.23L8.55 6.02Z";
+                    icon: Glyphs.settings;
                     clicked => { root.go("settings"); }
                 }
             }
