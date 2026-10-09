@@ -6,6 +6,7 @@ them under Settings → Updates.
 ## 0.10.0 — 2026-10-09
 - Smowaudio no longer needs a browser engine (WebView2): every window, from the mixer to the tray flyout, is drawn natively
 - The tray flyout reacts to the scroll wheel as soon as it opens, and stays sharp at 125 % and 150 % display scaling
+- Icons come from Windows 11's own icon set, so they stay sharp at any display scaling
 - Faders snap to 100 % only while you drag them, so the scroll wheel and arrow keys can move them in small steps
 - Uninstalling also removes the sign-in task
 
