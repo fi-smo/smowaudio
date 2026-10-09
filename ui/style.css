@@ -463,28 +463,6 @@ kbd {
   .switch .track, .switch .track::after, .lane { transition: none; }
 }
 
-/* ---------- shortcut overlay ---------- */
-html:has(body.osd-body), body.osd-body { background: transparent; }
-body.osd-body { padding: 8px 8px 16px; display: flex; justify-content: flex-end; align-items: flex-start; }
-.osd {
-  --c: var(--focus);
-  width: 100%; display: grid; gap: 8px; padding: 10px 12px; border-radius: 10px;
-  background: var(--panel); border: 1px solid var(--line-strong); box-shadow: 0 6px 14px rgba(0, 0, 0, .3);
-  opacity: 0; transform: translateY(-6px); transition: opacity .25s ease, transform .25s ease;
-}
-.osd.shown { opacity: 1; transform: none; transition-duration: .12s; }
-.osd-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.osd .tape { font-size: 13px; padding: 0 6px; flex: none; }
-.osd-label { color: var(--muted); font-size: 13px; flex: none; }
-.osd-value { margin-left: auto; font: 600 14px/1.2 var(--font-num); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.osd-bar { position: relative; height: 6px; border-radius: 3px; background: var(--well); }
-.osd-bar i { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--c); transition: width .12s ease; }
-.osd-unity { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--muted); }
-.osd.dim .osd-bar i { background: var(--faint); }
-.osd.dim .osd-value { color: var(--hot); }
-.osd.dim .tape { filter: saturate(.25); }
-@media (prefers-reduced-motion: reduce) { .osd, .osd.shown { transition: none; transform: none; } }
-
 /* ---------- mic test ---------- */
 .mictest-body { display: grid; gap: 8px; padding: 0 16px 14px; }
 .mictest-row { display: grid; grid-template-columns: auto 1fr 1fr; gap: 8px; }

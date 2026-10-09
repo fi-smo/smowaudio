@@ -68,6 +68,26 @@ pub fn start(app: &AppHandle) {
     }
 }
 
+/// Which window is being created next: Slint asks for its window attributes before it knows.
+#[derive(Clone, Copy)]
+pub(crate) enum WindowKind {
+    Flyout,
+    Main,
+    Overlay,
+}
+
+thread_local! {
+    static NEXT_WINDOW: std::cell::Cell<WindowKind> = const { std::cell::Cell::new(WindowKind::Flyout) };
+}
+
+/// Creates a window of the given kind (`create` calls its `::new()`).
+pub(crate) fn create_window<T>(kind: WindowKind, create: impl FnOnce() -> T) -> T {
+    NEXT_WINDOW.set(kind);
+    let window = create();
+    NEXT_WINDOW.set(WindowKind::Flyout);
+    window
+}
+
 fn run(app: AppHandle) -> Result<(), slint::PlatformError> {
     // Device names and the output list need COM on this thread.
     let _com = audio::ComGuard::new();
@@ -77,6 +97,24 @@ fn run(app: AppHandle) -> Result<(), slint::PlatformError> {
         .renderer_name("software".into())
         .with_winit_window_attributes_hook(|attributes| {
             use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
+            // Drag and drop needs OLE's single-threaded COM, but this thread uses the
+            // multithreaded kind for the device list; no window here takes drops anyway.
+            let attributes = attributes.with_drag_and_drop(false);
+            match NEXT_WINDOW.get() {
+                WindowKind::Main => return attributes.with_skip_taskbar(false),
+                WindowKind::Overlay => {
+                    return attributes
+                        .with_decorations(false)
+                        .with_resizable(false)
+                        .with_skip_taskbar(true)
+                        .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
+                        .with_active(false)
+                        .with_undecorated_shadow(false)
+                        .with_corner_preference(CornerPreference::DoNotRound)
+                        .with_border_color(None)
+                }
+                WindowKind::Flyout => {}
+            }
             attributes
                 .with_decorations(false)
                 .with_resizable(false)
@@ -86,9 +124,6 @@ fn run(app: AppHandle) -> Result<(), slint::PlatformError> {
                 .with_undecorated_shadow(false)
                 .with_corner_preference(CornerPreference::Round)
                 .with_border_color(None)
-                // Drag and drop needs OLE's single-threaded COM, but this thread uses the
-                // multithreaded kind for the device list; the flyout takes no drops anyway.
-                .with_drag_and_drop(false)
         })
         .with_winit_custom_application_handler(FocusWatcher { app: app.clone(), mods: Default::default() })
         .select()?;
@@ -349,7 +384,7 @@ fn focus(retry: bool) {
     });
 }
 
-fn hwnd_of(window: &winit::window::Window) -> Option<isize> {
+pub(crate) fn hwnd_of(window: &winit::window::Window) -> Option<isize> {
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
     match window.window_handle().ok()?.as_raw() {
         RawWindowHandle::Win32(handle) => Some(handle.hwnd.get()),

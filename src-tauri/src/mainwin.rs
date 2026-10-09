@@ -80,7 +80,7 @@ pub fn open(app: &AppHandle) {
 }
 
 fn create(app: &AppHandle) -> Result<(), slint::PlatformError> {
-    let window = MainWindow::new()?;
+    let window = crate::flyout::create_window(crate::flyout::WindowKind::Main, MainWindow::new)?;
     let channels = Rc::new(VecModel::<StripData>::default());
     window.set_channels(ModelRc::from(channels.clone()));
     wire_callbacks(&window, app);

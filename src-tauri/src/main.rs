@@ -917,7 +917,6 @@ fn main() {
             set_hotkey,
             pause_hotkeys,
             set_volume_step,
-            osd::take_osd,
             take_pending_view
         ])
         .setup(move |app| {

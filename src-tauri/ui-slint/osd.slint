@@ -1,0 +1,103 @@
+// The overlay in the screen's top-right corner confirming what a keyboard shortcut changed.
+// Rust (osd.rs) fills it in, shows it without taking focus and hides the window again.
+import { Theme, Px, Tape } from "common.slint";
+
+export component OsdWindow inherits Window {
+    // game, chat, media, aux, master, mic, output or system.
+    in property <string> group: "system";
+    in property <string> tape;
+    in property <string> label;
+    in property <string> value;
+    // Bar fill 0..1, or -1 for no bar; where 100 % (or 0 dB) sits, or -1.
+    in property <float> level: -1;
+    in property <float> unity: -1;
+    // Muted or switched off: greyed out.
+    in property <bool> dim;
+    // Faded in while true; Rust clears it just before hiding the window.
+    in property <bool> shown;
+
+    property <color> tint: group == "game" ? Theme.game
+        : group == "chat" ? Theme.chat
+        : group == "media" ? Theme.media
+        : group == "aux" ? Theme.aux
+        : group == "master" ? Theme.master
+        : group == "mic" ? Theme.mic : Theme.focus;
+
+    title: "Smowaudio overlay";
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+    width: 320px;
+    height: 96px;
+
+    card := Rectangle {
+        // Room around the card for its shadow, like the old page's padding.
+        x: 8px;
+        y: root.shown ? 8px : 2px;
+        width: parent.width - 16px;
+        height: body.preferred-height;
+        opacity: root.shown ? 1 : 0;
+        animate opacity, y { duration: root.shown ? 120ms : 250ms; easing: ease; }
+        background: Theme.panel;
+        border-width: Px.hair();
+        border-color: Theme.line-strong;
+        border-radius: 10px;
+        drop-shadow-blur: 14px;
+        drop-shadow-offset-y: 6px;
+        drop-shadow-color: #0000004d;
+        body := VerticalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-top: 10px;
+            padding-bottom: 10px;
+            spacing: 8px;
+            HorizontalLayout {
+                spacing: 10px;
+                VerticalLayout {
+                    alignment: center;
+                    Tape {
+                        label: root.tape;
+                        // Muted: the tape loses most of its colour.
+                        tint: root.dim ? root.tint.mix(Theme.faint, 0.25) : root.tint;
+                        ink: root.group == "master" ? Theme.master-ink : Theme.tape-ink;
+                    }
+                }
+                Text { text: root.label; color: Theme.muted; font-size: 13px; vertical-alignment: center; }
+                Text {
+                    text: root.value;
+                    horizontal-stretch: 1;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    color: root.dim ? Theme.hot : Theme.text;
+                    font-family: Theme.font-num;
+                    font-size: 14px;
+                    font-weight: 600;
+                }
+            }
+            if root.level >= 0: Rectangle {
+                height: 6px;
+                border-radius: 3px;
+                background: Theme.well;
+                Rectangle {
+                    x: 0;
+                    width: parent.width * clamp(root.level, 0, 1);
+                    border-radius: 3px;
+                    background: root.dim ? Theme.faint : root.tint;
+                    animate width { duration: 120ms; easing: ease; }
+                }
+                if root.unity >= 0: Rectangle {
+                    x: parent.width * root.unity - 1px;
+                    y: -3px;
+                    width: 2px;
+                    height: 12px;
+                    border-radius: 1px;
+                    background: Theme.muted;
+                }
+            }
+        }
+    }
+
+    accessible-role: text;
+    accessible-label: root.tape + " " + root.label + ": " + root.value;
+}

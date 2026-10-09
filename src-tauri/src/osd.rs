@@ -1,18 +1,31 @@
-//! On-screen overlay in the top-right corner, confirming what a keyboard shortcut changed.
+//! On-screen overlay in the top-right corner, confirming what a keyboard shortcut changed. A
+//! Slint window (ui-slint/osd.slint) on the Slint thread that never takes focus or clicks.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::cell::RefCell;
+use std::time::Duration;
 
-use parking_lot::Mutex;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder};
+use slint::winit_030::{winit, WinitWindowAccessor};
+use slint::{ComponentHandle, PhysicalPosition};
+use tauri::AppHandle;
+use windows::Win32::Foundation::{HWND, POINT};
+use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY};
+use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetCursorPos, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WS_EX_NOACTIVATE,
+};
 
-/// Window size in CSS pixels; the card inside leaves room for its shadow.
+use crate::flyout::{create_window, hwnd_of, WindowKind};
+use crate::ui::{OsdWindow, Theme};
+
+/// Window size in logical pixels; the card inside leaves room for its shadow.
 const SIZE: (f64, f64) = (320.0, 96.0);
-/// Distance from the screen's top-right corner, in CSS pixels.
+/// Distance from the screen's top-right corner, in logical pixels.
 const MARGIN: f64 = 12.0;
-/// How long the overlay stays up; the page fades out just before.
+/// How long the overlay stays up, and when it starts fading out.
 const VISIBLE: Duration = Duration::from_millis(1600);
+const FADE_AFTER: Duration = Duration::from_millis(1300);
 
 #[derive(Serialize, Clone, Debug)]
 pub struct Osd {
@@ -32,97 +45,134 @@ pub struct Osd {
     pub dim: bool,
 }
 
-static LATEST: Mutex<Option<Osd>> = Mutex::new(None);
-static HIDE_AT: Mutex<Option<Instant>> = Mutex::new(None);
-static TIMER_RUNNING: AtomicBool = AtomicBool::new(false);
-
-/// Shows the overlay (creating its window the first time) and hides it again shortly after.
-/// Call off the UI thread; creating the window waits for it.
-pub fn show(app: &AppHandle, osd: Osd) {
-    *LATEST.lock() = Some(osd.clone());
-    let window = match app.get_webview_window("osd") {
-        Some(window) => {
-            let _ = window.emit("osd", osd);
-            window
-        }
-        // The page picks up LATEST through `take_osd` once it has loaded.
-        None => match WebviewWindowBuilder::new(app, "osd", WebviewUrl::App("osd.html".into()))
-            .title("Smowaudio overlay")
-            .inner_size(SIZE.0, SIZE.1)
-            .decorations(false)
-            .transparent(true)
-            .shadow(false)
-            .resizable(false)
-            .skip_taskbar(true)
-            .always_on_top(true)
-            // Never take focus from the game or app in front.
-            .focusable(false)
-            .focused(false)
-            .visible(false)
-            .build()
-        {
-            Ok(window) => {
-                let _ = window.set_ignore_cursor_events(true);
-                window
-            }
-            Err(e) => {
-                crate::append_log(&format!("overlay window failed: {e}"));
-                return;
-            }
-        },
-    };
-
-    // Already up (a held volume shortcut updates it ~40 times a second): just extend it.
-    if !window.is_visible().unwrap_or(false) {
-        // Top-right of the screen the mouse is on, which is where the user is looking.
-        let monitor = app
-            .cursor_position()
-            .ok()
-            .and_then(|p| window.monitor_from_point(p.x, p.y).ok().flatten())
-            .or_else(|| window.primary_monitor().ok().flatten());
-        if let Some(monitor) = monitor {
-            let scale = monitor.scale_factor();
-            let area = monitor.work_area();
-            let _ = window.set_size(LogicalSize::new(SIZE.0, SIZE.1));
-            let x = area.position.x as f64 + area.size.width as f64 - (SIZE.0 + MARGIN) * scale;
-            let y = area.position.y as f64 + MARGIN * scale;
-            let _ = window.set_position(PhysicalPosition::new(x, y));
-        }
-        let _ = window.show();
-    }
-
-    // Hide the window itself afterwards: a transparent topmost window left over a game can
-    // stop it presenting directly to the screen, which costs latency. One timer thread at a time;
-    // showing again only pushes its deadline back.
-    let mut hide_at = HIDE_AT.lock();
-    *hide_at = Some(Instant::now() + VISIBLE);
-    if !TIMER_RUNNING.swap(true, Ordering::Relaxed) {
-        let handle = app.clone();
-        std::thread::spawn(move || loop {
-            let due = HIDE_AT.lock().unwrap_or_else(Instant::now);
-            let now = Instant::now();
-            if now < due {
-                std::thread::sleep(due - now);
-                continue;
-            }
-            // Decide and hide under the lock, so a show() can't slip in between and be hidden
-            // straight away. show() runs on the shortcut worker, never the UI thread.
-            let mut hide_at = HIDE_AT.lock();
-            if hide_at.is_some_and(|due| Instant::now() < due) {
-                continue;
-            }
-            *hide_at = None;
-            if let Some(window) = handle.get_webview_window("osd") {
-                let _ = window.hide();
-            }
-            TIMER_RUNNING.store(false, Ordering::Relaxed);
-            break;
-        });
-    }
+struct Overlay {
+    window: OsdWindow,
+    hwnd: Option<isize>,
+    /// On screen right now (the window is shown and hidden behind Slint's back).
+    up: bool,
+    fade: slint::Timer,
+    hide: slint::Timer,
 }
 
-/// The overlay to draw right after its window loads.
-#[tauri::command]
-pub fn take_osd() -> Option<Osd> {
-    LATEST.lock().clone()
+thread_local! {
+    static OVERLAY: RefCell<Option<Overlay>> = const { RefCell::new(None) };
+}
+
+/// Shows the overlay and hides it again shortly after. Call from any thread; a held volume
+/// shortcut calls this ~40 times a second, which only updates it and pushes the hiding back.
+pub fn show(_app: &AppHandle, osd: Osd) {
+    let _ = slint::invoke_from_event_loop(move || show_now(osd));
+}
+
+fn show_now(osd: Osd) {
+    OVERLAY.with(|o| {
+        let mut o = o.borrow_mut();
+        if o.is_none() {
+            match create_window(WindowKind::Overlay, OsdWindow::new) {
+                Ok(window) => {
+                    *o = Some(Overlay {
+                        window,
+                        hwnd: None,
+                        up: false,
+                        fade: slint::Timer::default(),
+                        hide: slint::Timer::default(),
+                    })
+                }
+                Err(e) => {
+                    crate::append_log(&format!("overlay window failed: {e}"));
+                    return;
+                }
+            }
+        }
+        let Some(o) = o.as_mut() else { return };
+        let w = &o.window;
+        w.global::<Theme>().set_dark(!crate::apps_use_light_theme());
+        w.set_group(osd.group.into());
+        w.set_tape(osd.tape.into());
+        w.set_label(osd.label.into());
+        w.set_value(osd.value.into());
+        w.set_level(osd.level.map_or(-1.0, |l| l.clamp(0.0, 1.0)));
+        w.set_unity(osd.unity.unwrap_or(-1.0));
+        w.set_dim(osd.dim);
+
+        if !o.up {
+            // Top-right of the screen the mouse is on, which is where the user is looking.
+            if let Some((right, top, scale)) = cursor_work_area() {
+                let x = right - ((SIZE.0 + MARGIN) * scale).round() as i32;
+                let y = top + (MARGIN * scale).round() as i32;
+                w.window().set_position(PhysicalPosition::new(x, y));
+            }
+            match o.hwnd {
+                // Never activated: the game or app in front keeps focus.
+                Some(hwnd) => unsafe {
+                    let hwnd = HWND(hwnd as *mut _);
+                    let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                    let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                },
+                None => {
+                    // The first show doesn't activate it (see the window attributes); after
+                    // that it's shown with Win32 directly, which Slint doesn't need to know.
+                    if let Err(e) = w.show() {
+                        crate::append_log(&format!("overlay didn't open: {e}"));
+                        return;
+                    }
+                    o.hwnd = w.window().with_winit_window(|win: &winit::window::Window| {
+                        // Clicks go through to whatever is underneath.
+                        let _ = win.set_cursor_hittest(false);
+                        hwnd_of(win)
+                    })
+                    .flatten();
+                    if let Some(hwnd) = o.hwnd {
+                        unsafe {
+                            let hwnd = HWND(hwnd as *mut _);
+                            let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+                            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE.0 as isize);
+                        }
+                    }
+                }
+            }
+            o.up = true;
+        }
+        w.set_shown(true);
+
+        let weak = w.as_weak();
+        o.fade.start(slint::TimerMode::SingleShot, FADE_AFTER, move || {
+            if let Some(w) = weak.upgrade() {
+                w.set_shown(false);
+            }
+        });
+        // Hide the window itself afterwards: a transparent topmost window left over a game can
+        // stop it presenting directly to the screen, which costs latency.
+        o.hide.start(slint::TimerMode::SingleShot, VISIBLE, hide);
+    });
+}
+
+fn hide() {
+    OVERLAY.with(|o| {
+        if let Some(o) = o.borrow_mut().as_mut() {
+            if let Some(hwnd) = o.hwnd {
+                unsafe {
+                    let _ = ShowWindow(HWND(hwnd as *mut _), SW_HIDE);
+                }
+            }
+            o.up = false;
+        }
+    });
+}
+
+/// The right and top edges of the work area of the screen the mouse is on (physical pixels), and
+/// that screen's scale.
+fn cursor_work_area() -> Option<(i32, i32, f64)> {
+    unsafe {
+        let mut point = POINT::default();
+        GetCursorPos(&mut point).ok()?;
+        let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTOPRIMARY);
+        let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return None;
+        }
+        let (mut dpi_x, mut dpi_y) = (96, 96);
+        let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y);
+        Some((info.rcWork.right, info.rcWork.top, dpi_x as f64 / 96.0))
+    }
 }
