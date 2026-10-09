@@ -90,7 +90,7 @@ fn run(app: AppHandle) -> Result<(), slint::PlatformError> {
                 // multithreaded kind for the device list; the flyout takes no drops anyway.
                 .with_drag_and_drop(false)
         })
-        .with_winit_custom_application_handler(FocusWatcher { app: app.clone() })
+        .with_winit_custom_application_handler(FocusWatcher { app: app.clone(), mods: Default::default() })
         .select()?;
 
     let window = FlyoutWindow::new()?;
@@ -128,23 +128,62 @@ fn run(app: AppHandle) -> Result<(), slint::PlatformError> {
 /// Hides the flyout when it loses focus, like Windows' own tray flyouts.
 struct FocusWatcher {
     app: AppHandle,
+    /// Held modifiers, for recording shortcuts in the main window.
+    mods: winit::keyboard::ModifiersState,
 }
 
 impl CustomApplicationHandler for FocusWatcher {
     fn window_event(
         &mut self,
         _event_loop: &winit::event_loop::ActiveEventLoop,
-        _window_id: winit::window::WindowId,
+        window_id: winit::window::WindowId,
         _winit_window: Option<&winit::window::Window>,
         _slint_window: Option<&slint::Window>,
         event: &winit::event::WindowEvent,
     ) -> EventResult {
-        if let winit::event::WindowEvent::Focused(false) = event {
-            hide();
-            *self.app.state::<AppState>().flyout_hidden_at.lock() = Some(Instant::now());
+        use winit::event::WindowEvent;
+        match event {
+            WindowEvent::Focused(false) => {
+                // Only the flyout's own focus: the main window losing focus to it mustn't close it.
+                let flyout = FLYOUT.with(|f| {
+                    f.borrow().as_ref().and_then(|f| f.window.window().with_winit_window(|w: &winit::window::Window| w.id()))
+                }) == Some(window_id);
+                if flyout {
+                    hide();
+                    *self.app.state::<AppState>().flyout_hidden_at.lock() = Some(Instant::now());
+                }
+            }
+            // A shortcut being recorded in Settings takes the keys before Slint sees them.
+            WindowEvent::ModifiersChanged(m) => {
+                self.mods = m.state();
+                if crate::settingsui::is_recording() {
+                    crate::settingsui::key_pressed(&self.app, held(self.mods), "", true);
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } if crate::settingsui::is_recording() => {
+                if event.state.is_pressed() && !event.repeat {
+                    if let winit::keyboard::PhysicalKey::Code(code) = event.physical_key {
+                        let name = format!("{code:?}");
+                        let modifier = ["Control", "Alt", "Shift", "Super", "Meta"].iter().any(|m| name.starts_with(m));
+                        if !modifier {
+                            crate::settingsui::key_pressed(&self.app, held(self.mods), &name, false);
+                        }
+                    }
+                }
+                return EventResult::PreventDefault;
+            }
+            _ => {}
         }
         EventResult::Propagate
     }
+}
+
+/// Modifiers in the order shortcuts are written: Ctrl, Alt, Shift, Win.
+fn held(m: winit::keyboard::ModifiersState) -> Vec<&'static str> {
+    [(m.control_key(), "Ctrl"), (m.alt_key(), "Alt"), (m.shift_key(), "Shift"), (m.super_key(), "Super")]
+        .into_iter()
+        .filter_map(|(on, name)| on.then_some(name))
+        .collect()
 }
 
 fn wire_callbacks(window: &FlyoutWindow, app: &AppHandle) {

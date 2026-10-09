@@ -2,13 +2,14 @@
 // and the current view below it.
 
 import { ScrollView } from "std-widgets.slint";
-import { Theme, Px, Icon } from "common.slint";
+import { Theme, Px, Icon, TextButton } from "common.slint";
 import { MixerView, StripData } from "mixer.slint";
 import { EqData, EqBandData } from "eq.slint";
 import { AppsView, AppCardData, LaneData } from "apps.slint";
 import { MicView, MicData, ChainTab } from "mic.slint";
+import { SettingsView, SelectOption, DeviceRowData, StreamItem, HealthData, DelayRowData, DelayData, ShortcutGroup, ShortcutRowData, ChangeEntry, UpdatesData } from "settings.slint";
 
-export { StripData, EqData, EqBandData, AppCardData, LaneData, MicData, ChainTab }
+export { StripData, EqData, EqBandData, AppCardData, LaneData, MicData, ChainTab, SelectOption, DeviceRowData, StreamItem, HealthData, DelayRowData, DelayData, ShortcutGroup, ShortcutRowData, ChangeEntry, UpdatesData }
 
 /// One section button in the rail: an icon over its name.
 component RailButton inherits Rectangle {
@@ -146,6 +147,50 @@ export component MainWindow inherits Window {
     callback mic-eq-pick(float, float, float, float, float) -> int;
     callback mic-eq-drag(int, float, float, float, float);
     callback mic-eq-widen(int, bool);
+
+    // Settings.
+    in-out property <string> settings-tab: "devices";
+    in property <[DeviceRowData]> playback-rows;
+    in property <[DeviceRowData]> cable-rows;
+    in property <bool> master-per-output;
+    in property <HealthData> health;
+    in-out property <bool> health-expanded;
+    in property <DelayData> delay;
+    in property <bool> launch-at-login;
+    in property <bool> windows-defaults;
+    in property <[ShortcutGroup]> shortcut-groups;
+    in property <[ShortcutRowData]> shortcut-rows;
+    in property <string> shortcut-group: "general";
+    in property <string> shortcut-group-title: "General";
+    in property <float> volume-step: 0.05;
+    in property <bool> any-shortcuts;
+    in property <UpdatesData> updates;
+    callback settings-tab-changed(string);
+    callback pick-device(string, string);
+    callback preference(string, bool);
+    callback retry;
+    callback measure;
+    callback launch(bool);
+    callback defaults(bool);
+    callback open-log;
+    callback shortcut-group-changed(string);
+    callback record(string);
+    callback clear-shortcut(string);
+    callback use-here(string);
+    callback volume-step-changed(float);
+    callback reset-shortcuts;
+    callback check-updates;
+    callback install-update;
+    callback more-changelog;
+
+    // A short message at the bottom ("Blip now plays on Chat"); red for errors.
+    in property <string> toast;
+    in property <bool> toast-error;
+    // A confirmation ("Clear all 3 shortcuts?") with a red action button.
+    in property <string> confirm-text;
+    in property <string> confirm-action;
+    callback confirm-accepted;
+    callback confirm-dismissed;
 
     callback view-changed(string);
     callback strip-volume(int, float);
@@ -324,10 +369,107 @@ export component MainWindow inherits Window {
                         eq-drag(i, x, y, w, h) => { root.mic-eq-drag(i, x, y, w, h); }
                         eq-widen(i, n) => { root.mic-eq-widen(i, n); }
                     }
-                    if root.view != "mixer" && root.view != "apps" && root.view != "mic": Text {
-                        text: "This section isn't in the native window yet.";
-                        color: Theme.muted;
-                        font-size: 13px;
+                    if root.view == "settings": HorizontalLayout {
+                        alignment: center;
+                        // A centred column, at most 1120px wide.
+                        SettingsView {
+                            width: min(1120px, parent.width);
+                            tab <=> root.settings-tab;
+                            devices-warn: root.health.failing > 0;
+                            playback-rows: root.playback-rows;
+                            cable-rows: root.cable-rows;
+                            master-per-output: root.master-per-output;
+                            health: root.health;
+                            health-expanded <=> root.health-expanded;
+                            delay: root.delay;
+                            launch-at-login: root.launch-at-login;
+                            windows-defaults: root.windows-defaults;
+                            shortcut-groups: root.shortcut-groups;
+                            shortcut-rows: root.shortcut-rows;
+                            shortcut-group: root.shortcut-group;
+                            shortcut-group-title: root.shortcut-group-title;
+                            volume-step: root.volume-step;
+                            any-shortcuts: root.any-shortcuts;
+                            updates: root.updates;
+                            tab-changed(t) => { root.settings-tab-changed(t); }
+                            pick-device(k, id) => { root.pick-device(k, id); }
+                            preference(n, v) => { root.preference(n, v); }
+                            retry => { root.retry(); }
+                            measure => { root.measure(); }
+                            launch(v) => { root.launch(v); }
+                            defaults(v) => { root.defaults(v); }
+                            open-log => { root.open-log(); }
+                            shortcut-group-changed(g) => { root.shortcut-group-changed(g); }
+                            record(a) => { root.record(a); }
+                            clear-shortcut(a) => { root.clear-shortcut(a); }
+                            use-here(a) => { root.use-here(a); }
+                            volume-step-changed(v) => { root.volume-step-changed(v); }
+                            reset-shortcuts => { root.reset-shortcuts(); }
+                            check-updates => { root.check-updates(); }
+                            install-update => { root.install-update(); }
+                            more-changelog => { root.more-changelog(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.toast != "": Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - self.height - 20px;
+        width: min(t.preferred-width + 28px, parent.width - 40px);
+        height: t.preferred-height + 16px;
+        border-radius: 8px;
+        background: root.toast-error ? Theme.hot : Theme.text;
+        drop-shadow-blur: 24px;
+        drop-shadow-offset-y: 12px;
+        drop-shadow-color: #00000040;
+        t := Text {
+            text: root.toast;
+            color: root.toast-error ? #ffffff : Theme.window;
+            font-size: 13px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            wrap: word-wrap;
+        }
+        accessible-role: text;
+        accessible-label: root.toast;
+    }
+    if root.confirm-text != "": Rectangle {
+        background: #00000073;
+        TouchArea { clicked => { root.confirm-dismissed(); } }
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: min(360px, parent.width - 32px);
+            height: dialog.preferred-height;
+            background: Theme.panel;
+            border-width: Px.hair();
+            border-color: Theme.line-strong;
+            border-radius: 8px;
+            TouchArea { }
+            dialog := VerticalLayout {
+                padding: 16px;
+                spacing: 14px;
+                Text { text: root.confirm-text; color: Theme.text; font-size: 13px; wrap: word-wrap; }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    height: 30px;
+                    TextButton { text: "Cancel"; clicked => { root.confirm-dismissed(); } }
+                    Rectangle {
+                        width: c-text.preferred-width + 24px;
+                        border-radius: 6px;
+                        background: Theme.hot;
+                        c-text := Text { text: root.confirm-action; color: Theme.window; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.confirm-accepted(); }
+                        }
+                        accessible-role: button;
+                        accessible-label: root.confirm-action;
+                        accessible-action-default => { root.confirm-accepted(); }
                     }
                 }
             }

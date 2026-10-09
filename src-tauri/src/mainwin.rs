@@ -214,7 +214,13 @@ fn wire_callbacks(window: &MainWindow, app: &AppHandle) {
     wire_mic(window, app);
     // A view shows the latest state as soon as it opens.
     let handle = app.clone();
-    window.on_view_changed(move |_| refresh(&handle));
+    window.on_view_changed(move |view| {
+        if view != "settings" {
+            crate::settingsui::stop_recording(&handle);
+        }
+        refresh(&handle);
+    });
+    crate::settingsui::wire(window, app);
     let handle = app.clone();
     window.on_move_app(move |exe, channel| {
         let exe = exe.to_string();
@@ -237,22 +243,31 @@ fn wire_callbacks(window: &MainWindow, app: &AppHandle) {
         refresh(&handle);
     });
     let weak = window.as_weak();
+    let handle = app.clone();
     window.on_buffer_clicked(move || {
         if let Some(w) = weak.upgrade() {
+            w.set_settings_tab("devices".into());
             w.set_view("settings".into());
         }
+        refresh(&handle);
     });
     let weak = window.as_weak();
+    let handle = app.clone();
     window.on_status_clicked(move || {
         if let Some(w) = weak.upgrade() {
+            w.set_settings_tab("devices".into());
             w.set_view("settings".into());
         }
+        refresh(&handle);
     });
     let weak = window.as_weak();
+    let handle = app.clone();
     window.on_update_clicked(move || {
         if let Some(w) = weak.upgrade() {
+            w.set_settings_tab("updates".into());
             w.set_view("settings".into());
         }
+        refresh(&handle);
     });
 }
 
@@ -426,8 +441,10 @@ fn refresh(app: &AppHandle) {
     let state = app.state::<AppState>();
     let config: Config = state.config.lock().clone();
     let status = state.engine.lock().as_ref().map(|e| e.shared.status.lock().clone()).unwrap_or_default();
-    let mut devices = device::list(Flow::Capture).unwrap_or_default();
-    devices.extend(device::list(Flow::Render).unwrap_or_default());
+    let capture = device::list(Flow::Capture).unwrap_or_default();
+    let render = device::list(Flow::Render).unwrap_or_default();
+    let mut devices = capture.clone();
+    devices.extend(render.iter().cloned());
     let resolve = |flow: Flow, id: &Option<String>| {
         device::resolve_physical(flow, id.as_deref(), config.previous_default(flow).as_deref())
             .ok()
@@ -559,7 +576,27 @@ fn refresh(app: &AppHandle) {
         );
         let update = state.updates.status_available();
         w.set_update_version(update.unwrap_or_default().into());
+        if w.get_view() == "settings" {
+            crate::settingsui::refresh(app, w, &config, &render, &capture, &status);
+        }
     });
+}
+
+/// The main window, if it has been opened.
+pub(crate) fn window() -> Option<MainWindow> {
+    MAIN.with(|m| m.borrow().as_ref().map(|m| m.window.clone_strong()))
+}
+
+/// Re-reads just the Settings view.
+pub(crate) fn refresh_settings(app: &AppHandle) {
+    let Some(w) = window() else { return };
+    let _com = audio::ComGuard::new();
+    let state = app.state::<AppState>();
+    let config: Config = state.config.lock().clone();
+    let status = state.engine.lock().as_ref().map(|e| e.shared.status.lock().clone()).unwrap_or_default();
+    let capture = device::list(Flow::Capture).unwrap_or_default();
+    let render = device::list(Flow::Render).unwrap_or_default();
+    crate::settingsui::refresh(app, &w, &config, &render, &capture, &status);
 }
 
 /// The Apps view's columns: rebuilt when apps come or go or change channel, else updated in place
@@ -881,10 +918,13 @@ fn wire_mic(window: &MainWindow, app: &AppHandle) {
         }
     });
     let weak = window.as_weak();
+    let handle = app.clone();
     window.on_open_devices(move || {
         if let Some(w) = weak.upgrade() {
+            w.set_settings_tab("devices".into());
             w.set_view("settings".into());
         }
+        refresh(&handle);
     });
     let handle = app.clone();
     window.on_mic_eq_preset(move |name| edit_mic(&handle, |mic| crate::eqedit::apply_preset(&mut mic.eq, &name)));

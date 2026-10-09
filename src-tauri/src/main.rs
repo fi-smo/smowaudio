@@ -7,6 +7,7 @@ mod engine;
 mod eqedit;
 mod flyout;
 mod mainwin;
+mod settingsui;
 /// The native (Slint) windows, compiled from ui-slint/app.slint by build.rs.
 mod ui {
     slint::include_modules!();
@@ -206,13 +207,13 @@ fn get_state_now(state: &AppState) -> CmdResult<Snapshot> {
     })
 }
 
-#[derive(Serialize)]
-struct DelayResult {
+#[derive(Serialize, Clone)]
+pub(crate) struct DelayResult {
     /// Channel index (see config::CHANNEL_NAMES).
-    channel: usize,
-    cable_ms: Option<f64>,
-    engine_ms: Option<f64>,
-    error: Option<String>,
+    pub channel: usize,
+    pub cable_ms: Option<f64>,
+    pub engine_ms: Option<f64>,
+    pub error: Option<String>,
 }
 
 /// Measures each channel's delay from an app to the output device (see audio::latency), one
@@ -220,7 +221,12 @@ struct DelayResult {
 #[tauri::command]
 async fn measure_delay(app: AppHandle) -> CmdResult<Vec<DelayResult>> {
     let handle = app.clone();
-    background(app, move |state| {
+    background(app, move |state| measure_delay_now(state, |i| { let _ = handle.emit("delay-progress", i); })).await
+}
+
+/// The measurement itself; `progress` gets each channel's index before it's measured. Needs COM.
+pub(crate) fn measure_delay_now(state: &AppState, progress: impl Fn(usize)) -> CmdResult<Vec<DelayResult>> {
+    {
         let config = state.config.lock().clone();
         let running = state.engine.lock().as_ref().map(|e| e.shared.status.lock().get("Output").cloned());
         if running.flatten().as_deref() != Some("running") {
@@ -243,7 +249,7 @@ async fn measure_delay(app: AppHandle) -> CmdResult<Vec<DelayResult>> {
             let result = match blocked {
                 Some(reason) => DelayResult { channel: i, cable_ms: None, engine_ms: None, error: Some(reason.into()) },
                 None => {
-                    let _ = handle.emit("delay-progress", i);
+                    progress(i);
                     match audio::latency::measure(sink, source, &output) {
                         Ok(d) => DelayResult { channel: i, cable_ms: Some(d.cable_ms), engine_ms: Some(d.engine_ms), error: None },
                         Err(e) => DelayResult { channel: i, cable_ms: None, engine_ms: None, error: Some(format!("{e:#}")) },
@@ -260,8 +266,7 @@ async fn measure_delay(app: AppHandle) -> CmdResult<Vec<DelayResult>> {
             results.push(result);
         }
         Ok(results)
-    })
-    .await
+    }
 }
 
 /// Restarts every audio stream ("Retry" in Settings when a stream has stopped).
@@ -293,8 +298,10 @@ fn update_status(app: AppHandle) -> updates::UpdateStatus {
 /// The changelog this version was built with (Markdown, newest version first).
 #[tauri::command]
 fn changelog() -> &'static str {
-    include_str!("../../CHANGELOG.md")
+    CHANGELOG
 }
+
+pub(crate) const CHANGELOG: &str = include_str!("../../CHANGELOG.md");
 
 /// Returns the newer version, or None if this one is the latest.
 #[tauri::command]
@@ -496,7 +503,7 @@ async fn set_devices(
 }
 
 /// Stops and restarts every stream, which takes a moment. Needs COM.
-fn set_devices_now(
+pub(crate) fn set_devices_now(
     state: &AppState,
     output: Option<String>,
     mic: Option<String>,
@@ -547,7 +554,7 @@ async fn set_windows_defaults(app: AppHandle, enabled: bool) -> CmdResult<()> {
 }
 
 /// Turns Sonar-style Windows defaults on, or off by restoring the user's own. Needs COM.
-fn set_windows_defaults_enabled(state: &AppState, enabled: bool) -> CmdResult<()> {
+pub(crate) fn set_windows_defaults_enabled(state: &AppState, enabled: bool) -> CmdResult<()> {
     {
         let mut config = state.config.lock();
         config.set_windows_defaults = enabled;
@@ -628,7 +635,7 @@ async fn set_launch_at_login(app: AppHandle, enabled: bool) -> CmdResult<()> {
 }
 
 /// Runs PowerShell, which takes about a second.
-fn set_launch_at_login_now(state: &AppState, enabled: bool) -> CmdResult<()> {
+pub(crate) fn set_launch_at_login_now(state: &AppState, enabled: bool) -> CmdResult<()> {
     let script = if enabled {
         let exe = std::env::current_exe().map_err(err)?.display().to_string().replace('\'', "''");
         format!(

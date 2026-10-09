@@ -1,0 +1,936 @@
+// Settings: Devices (playback, recording, cables, delay), General (sign-in, Windows defaults,
+// stream health, log), Shortcuts and Updates (version, automatic installs, what's new, changelog).
+
+import { Theme, Px, Icon, Tape, Switch, Seg, TextButton, LinkButton } from "common.slint";
+
+export struct SelectOption {
+    id: string, // "" = the empty choice (Automatic, None)
+    label: string,
+}
+
+export struct DeviceRowData {
+    key: string, // output, mic, mic_sink, source0..3
+    label: string,
+    tape-kind: int, // -1 a plain label, 0..3 a channel's tape, 5 the Virtual mic's
+    options: [SelectOption],
+    selected: string,
+    selected-label: string,
+    // Help under the label: text, an optional `code` part, more text.
+    help: string,
+    code: string,
+    help-tail: string,
+    help-kind: int, // 0 faint, 1 bad, 2 ok, 3 muted
+    busy: bool, // applying
+    applied: bool,
+}
+
+export struct StreamItem {
+    name: string,
+    kind: int, // 0 running, 1 off (mic not connected), 2 stopped
+    reason: string,
+}
+
+export struct HealthData {
+    failing: int,
+    title: string, // "Audio streams" or "Output stream stopped"
+    text: string, // " — all 9 running"
+    items: [StreamItem],
+}
+
+export struct DelayRowData {
+    channel: int,
+    cable: float, // fractions of the longest total
+    engine: float,
+    parts: string, // "15 ms + 63 ms"
+    total: string, // "78 ms"
+    error: string,
+}
+
+export struct DelayData {
+    running: bool,
+    button: string, // "Measure", "Measuring Chat…"
+    empty: string, // "Not measured yet."
+    measured: string, // "measured 2 min ago"
+    rows: [DelayRowData],
+}
+
+export struct ShortcutGroup {
+    id: string,
+    title: string,
+    kind: int, // -1 General (no tape), 0..3 channels, 4 Master, 5 Mic
+    assigned: int,
+    count: int,
+    flagged: bool, // holds the action a just-pressed combo clashes with
+}
+
+export struct ShortcutRowData {
+    action: string,
+    label: string,
+    keys: [string], // keycaps, empty = not set
+    recording: bool,
+    clash: bool, // keys are a pressed combo that another action already uses
+    note: string,
+    note-kind: int, // 0 hint (Esc cancels · Backspace clears), 1 warn (clash), 2 bad
+    other: string, // the clashing group, for "Use here, clear Game"
+}
+
+export struct ChangeEntry {
+    version: string,
+    date: string,
+    badge: string, // "Installed", "New" or ""
+    items: [string],
+}
+
+export struct UpdatesData {
+    version: string,
+    state: string,
+    state-kind: int, // 0 plain, 1 ok, 2 bad
+    available: bool,
+    installing: bool,
+    install-text: string,
+    progress: float, // 0..1, or -1 for no bar
+    checking: bool,
+    auto: bool,
+    news-title: string,
+    news: [ChangeEntry],
+    news-plain: string,
+    history: [ChangeEntry],
+    more: string, // "Show 12 older versions", "Show fewer" or ""
+}
+
+/// A dropdown: the current choice and a chevron; the list opens in a popup.
+component Select inherits Rectangle {
+    in property <[SelectOption]> options;
+    in property <string> selected;
+    in property <string> selected-label;
+    in property <bool> enabled: true;
+    in property <bool> invalid;
+    in property <string> label;
+    callback picked(string);
+    height: 30px;
+    border-radius: 6px;
+    border-width: Px.hair();
+    border-color: invalid ? Theme.hot : ta.has-hover && enabled ? Theme.line-strong : Theme.line;
+    background: Theme.raised;
+    opacity: enabled ? 1 : 0.6;
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 6px;
+        Text {
+            text: root.selected-label;
+            color: Theme.text;
+            font-size: 13px;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        Icon {
+            size: 12;
+            width: 12px;
+            height: 12px;
+            y: (parent.height - 12px) / 2;
+            stroke: Theme.muted;
+            stroke-width: 1.6px;
+            commands: "M3 4.5 6 7.5 9 4.5";
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: root.enabled ? pointer : MouseCursor.progress;
+        clicked => { if root.enabled { list.show(); } }
+    }
+    accessible-role: combobox;
+    accessible-label: root.label;
+    accessible-value: root.selected-label;
+    accessible-action-default => { if root.enabled { list.show(); } }
+    list := PopupWindow {
+        x: 0;
+        y: root.height + 4px;
+        width: root.width;
+        Rectangle {
+            background: Theme.panel;
+            border-width: Px.hair();
+            border-color: Theme.line-strong;
+            border-radius: 7px;
+            drop-shadow-blur: 28px;
+            drop-shadow-offset-y: 10px;
+            drop-shadow-color: #00000047;
+            VerticalLayout {
+                padding: 3px;
+                spacing: 1px;
+                for o in root.options: Rectangle {
+                    height: 28px;
+                    border-radius: 5px;
+                    background: o-ta.has-hover ? Theme.raised : transparent;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 8px;
+                        Rectangle {
+                            width: 6px;
+                            height: 6px;
+                            y: (parent.height - 6px) / 2;
+                            border-radius: 3px;
+                            background: o.id == root.selected ? Theme.ok : transparent;
+                        }
+                        Text {
+                            text: o.label;
+                            color: Theme.text;
+                            font-size: 13px;
+                            font-weight: o.id == root.selected ? 500 : 400;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                    o-ta := TouchArea {
+                        clicked => { root.picked(o.id); }
+                    }
+                    accessible-role: list-item;
+                    accessible-label: o.label;
+                    accessible-item-selected: o.id == root.selected;
+                    accessible-action-default => { root.picked(o.id); }
+                }
+            }
+        }
+    }
+}
+
+/// The one row every setting uses: label and help on the left, the control on the right.
+component SettingRow inherits Rectangle {
+    in property <string> label;
+    in property <string> help;
+    in property <int> help-kind; // 0 faint, 1 bad, 2 ok, 3 muted
+    in property <bool> first;
+    in property <bool> applied;
+    // How wide the control column is: 300..380px for dropdowns, or just the control ("fit").
+    in property <bool> fit;
+    in property <length> control-width: 340px;
+    background: applied ? Theme.ok.mix(Theme.panel, 0.05) : transparent;
+    height: max(text.preferred-height, 30px) + 24px;
+    if !root.first: Rectangle { y: 0; height: Px.hair(); background: Theme.line; }
+    text := VerticalLayout {
+        x: 16px;
+        y: (parent.height - self.height) / 2;
+        width: parent.width - 32px - (root.fit ? 0 : root.control-width + 24px);
+        height: self.preferred-height;
+        spacing: 2px;
+        Text { text: root.label; color: Theme.text; font-size: 13px; overflow: elide; }
+        if root.help != "": Text {
+            text: root.help;
+            color: root.help-kind == 1 ? Theme.hot : root.help-kind == 2 ? Theme.ok : root.help-kind == 3 ? Theme.muted : Theme.faint;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+    }
+    HorizontalLayout {
+        x: parent.width - 16px - self.width;
+        y: (parent.height - 30px) / 2;
+        width: root.fit ? self.preferred-width : root.control-width;
+        height: 30px;
+        alignment: end;
+        @children
+    }
+}
+
+/// A device or cable row: a dropdown, with "Applying…" / "✓ Applied" in the help.
+component DeviceRow inherits Rectangle {
+    in property <DeviceRowData> data;
+    in property <bool> first;
+    callback picked(string, string); // key, device id ("" = automatic / none)
+    property <length> control-width: max(300px, min(380px, (self.width - 56px) * 0.45));
+    background: data.applied ? Theme.ok.mix(Theme.panel, 0.05) : transparent;
+    height: max(text.preferred-height, 30px) + 24px;
+    if !root.first: Rectangle { y: 0; height: Px.hair(); background: Theme.line; }
+    text := HorizontalLayout {
+        x: 16px;
+        y: (parent.height - self.height) / 2;
+        width: parent.width - 56px - root.control-width;
+        height: self.preferred-height;
+        spacing: 10px;
+        // Cable rows: the channel's tape beside the help.
+        if root.data.tape-kind >= 0: VerticalLayout {
+            alignment: center;
+            Tape {
+                label: root.data.label;
+                tint: root.data.tape-kind == 5 ? Theme.mic : Theme.row-color(root.data.tape-kind);
+            }
+        }
+        VerticalLayout {
+            spacing: 2px;
+            alignment: center;
+            horizontal-stretch: 1;
+            if root.data.tape-kind < 0: Text { text: root.data.label; color: Theme.text; font-size: 13px; overflow: elide; }
+            if root.data.help != "" || root.data.code != "": HorizontalLayout {
+                spacing: 5px;
+                alignment: start;
+                property <color> c: root.data.help-kind == 1 ? Theme.hot : root.data.help-kind == 2 ? Theme.ok : root.data.help-kind == 3 ? Theme.muted : Theme.faint;
+                Text { text: root.data.help; color: parent.c; font-size: 12px; wrap: word-wrap; }
+                if root.data.code != "": Text { text: root.data.code; color: Theme.muted; font-family: Theme.font-num; font-size: 11px; vertical-alignment: center; }
+                if root.data.help-tail != "": Text { text: root.data.help-tail; color: parent.c; font-size: 12px; }
+            }
+        }
+    }
+    Select {
+        x: parent.width - 16px - root.control-width;
+        y: (parent.height - 30px) / 2;
+        width: root.control-width;
+        options: root.data.options;
+        selected: root.data.selected;
+        selected-label: root.data.selected-label;
+        enabled: !root.data.busy;
+        invalid: root.data.help-kind == 1;
+        label: root.data.label;
+        picked(id) => { root.picked(root.data.key, id); }
+    }
+}
+
+/// A plain panel holding rows.
+component Panel inherits Rectangle {
+    background: Theme.panel;
+    border-width: Px.hair();
+    border-color: Theme.line;
+    border-radius: 8px;
+    clip: true;
+    height: rows.preferred-height;
+    rows := VerticalLayout { @children }
+}
+
+/// The stream health summary: one line when all is well, the list when something stopped.
+component Health inherits VerticalLayout {
+    in property <HealthData> health;
+    in-out property <bool> expanded;
+    callback retry;
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 12px;
+        padding-bottom: 12px;
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 7px;
+                height: 7px;
+                border-radius: 3.5px;
+                background: root.health.failing > 0 ? Theme.warn : Theme.ok;
+            }
+        }
+        HorizontalLayout {
+            horizontal-stretch: 1;
+            spacing: 0;
+            Text { text: root.health.title; color: Theme.text; font-size: 13px; font-weight: 600; vertical-alignment: center; }
+            Text { text: root.health.text; color: Theme.muted; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+        }
+        if root.health.failing > 0: TextButton { text: "Retry"; clicked => { root.retry(); } }
+        LinkButton {
+            text: root.health.failing > 0 ? (root.expanded ? "Hide streams ⌃" : "Show streams ⌄") : (root.expanded ? "Hide details ⌃" : "Show details ⌄");
+            tint: Theme.muted;
+            y: (parent.height - self.height) / 2;
+            clicked => { root.expanded = !root.expanded; }
+        }
+    }
+    if root.expanded: Rectangle {
+        height: 3 * 22px + 14px;
+        for s[i] in root.health.items: HorizontalLayout {
+            // Three columns, filled top to bottom.
+            x: 16px + mod(floor(i / 3), 3) * (parent.width - 32px) / 3;
+            y: mod(i, 3) * 22px;
+            width: (parent.width - 32px) / 3;
+            height: 18px;
+            spacing: 8px;
+            Rectangle {
+                width: 6px;
+                height: 6px;
+                y: (parent.height - 6px) / 2;
+                border-radius: 3px;
+                background: s.kind == 0 ? Theme.ok : s.kind == 2 ? Theme.hot : transparent;
+                border-width: s.kind == 1 ? Px.hair() : 0;
+                border-color: Theme.faint;
+            }
+            Text {
+                text: s.name;
+                color: s.kind == 2 ? Theme.hot : s.kind == 1 ? Theme.faint : Theme.muted;
+                font-size: 12px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+/// A key combination as keycaps.
+component Keycaps inherits HorizontalLayout {
+    in property <[string]> keys;
+    spacing: 4px;
+    alignment: center;
+    for k in root.keys: Rectangle {
+        width: t.preferred-width + 10px;
+        height: 20px;
+        y: (parent.height - 20px) / 2;
+        border-radius: 4px;
+        background: Theme.panel;
+        border-width: Px.hair();
+        border-color: Theme.line-strong;
+        Rectangle { y: parent.height - 2px; height: 2px; background: Theme.line-strong; border-radius: 2px; }
+        t := Text { text: k; color: Theme.text; font-family: Theme.font-num; font-size: 11px; font-weight: 500; horizontal-alignment: center; vertical-alignment: center; }
+    }
+}
+
+/// One version in the changelog: number, badge, date, and its changes as bullets.
+component ChangeView inherits VerticalLayout {
+    in property <ChangeEntry> entry;
+    in property <bool> first;
+    spacing: 6px;
+    if !root.first: Rectangle { height: Px.hair(); background: Theme.line; }
+    HorizontalLayout {
+        spacing: 8px;
+        Text { text: root.entry.version; color: Theme.text; font-family: Theme.font-num; font-size: 13px; font-weight: 600; }
+        if root.entry.badge != "": Rectangle {
+            width: b.preferred-width + 12px;
+            height: 16px;
+            y: (parent.height - 16px) / 2;
+            border-radius: 4px;
+            background: Theme.ok.mix(Theme.panel, 0.14);
+            b := Text { text: root.entry.badge.to-uppercase(); color: Theme.ok; font-size: 10px; font-weight: 600; letter-spacing: 0.04 * 10px; horizontal-alignment: center; vertical-alignment: center; }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        Text { text: root.entry.date; color: Theme.faint; font-size: 11px; vertical-alignment: center; }
+    }
+    for item in root.entry.items: HorizontalLayout {
+        spacing: 8px;
+        padding-left: 6px;
+        Text { text: "•"; color: Theme.muted; font-size: 12px; }
+        Text { text: item; color: Theme.muted; font-size: 12px; wrap: word-wrap; horizontal-stretch: 1; }
+    }
+}
+
+export component SettingsView inherits VerticalLayout {
+    in-out property <string> tab: "devices";
+    in property <bool> devices-warn;
+    // Devices.
+    in property <[DeviceRowData]> playback-rows; // output, mic
+    in property <[DeviceRowData]> cable-rows; // mic_sink, source0..3
+    in property <bool> master-per-output;
+    in property <HealthData> health;
+    in-out property <bool> health-expanded;
+    in property <DelayData> delay;
+    // General.
+    in property <bool> launch-at-login;
+    in property <bool> windows-defaults;
+    // Shortcuts.
+    in property <[ShortcutGroup]> shortcut-groups;
+    in property <[ShortcutRowData]> shortcut-rows;
+    in property <string> shortcut-group: "general";
+    in property <string> shortcut-group-title: "General";
+    in property <float> volume-step: 0.05;
+    in property <bool> any-shortcuts;
+    // Updates.
+    in property <UpdatesData> updates;
+
+    callback tab-changed(string);
+    callback pick-device(string, string);
+    callback preference(string, bool);
+    callback retry;
+    callback measure;
+    callback launch(bool);
+    callback defaults(bool);
+    callback open-log;
+    callback shortcut-group-changed(string);
+    callback record(string);
+    callback clear-shortcut(string);
+    callback use-here(string);
+    callback volume-step-changed(float);
+    callback reset-shortcuts;
+    callback check-updates;
+    callback install-update;
+    callback more-changelog;
+
+    spacing: 16px;
+    Text { text: "Settings"; color: Theme.text; font-size: 20px; font-weight: 600; }
+
+    // Tabs.
+    Rectangle {
+        height: 37px;
+        Rectangle { y: parent.height - Px.hair(); height: Px.hair(); background: Theme.line; }
+        HorizontalLayout {
+            spacing: 2px;
+            alignment: start;
+            for t in [{ id: "devices", label: "Devices" }, { id: "general", label: "General" }, { id: "shortcuts", label: "Shortcuts" }, { id: "updates", label: "Updates" }]: Rectangle {
+                property <bool> sel: t.id == root.tab;
+                width: tab-row.preferred-width + 24px;
+                tab-row := HorizontalLayout {
+                    x: 12px;
+                    spacing: 6px;
+                    Text { text: t.label; color: sel || tab-ta.has-hover ? Theme.text : Theme.muted; font-size: 13px; vertical-alignment: center; }
+                    if t.id == "devices" && root.devices-warn: Rectangle { width: 6px; height: 6px; y: (parent.height - 6px) / 2; border-radius: 3px; background: Theme.warn; }
+                }
+                if sel: Rectangle { y: parent.height - 2px; height: 2px; background: Theme.text; }
+                tab-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.tab = t.id; root.tab-changed(t.id); }
+                }
+                accessible-role: AccessibleRole.tab;
+                accessible-label: t.label;
+                accessible-item-selected: sel;
+                accessible-action-default => { root.tab = t.id; root.tab-changed(t.id); }
+            }
+        }
+    }
+
+    // ---------- Devices ----------
+    if root.tab == "devices" && root.health.failing > 0: Panel {
+        Health { health: root.health; expanded <=> root.health-expanded; retry => { root.retry(); } }
+    }
+    if root.tab == "devices": Panel {
+        Text { x: 16px; text: "Playback and recording"; color: Theme.text; font-size: 15px; font-weight: 600; height: 40px; vertical-alignment: center; }
+        for r[i] in root.playback-rows: VerticalLayout {
+            DeviceRow { data: r; first: false; picked(k, id) => { root.pick-device(k, id); } }
+            // The per-device master sits between the output and the microphone.
+            if r.key == "output": SettingRow {
+                label: "Separate master for each device";
+                help: "Each pair of headphones or speakers keeps its own master volume and EQ, and gets them back when it plays again.";
+                fit: true;
+                Switch {
+                    checked: root.master-per-output;
+                    label: "Separate master for each device";
+                    toggled(v) => { root.preference("master_per_output", v); }
+                }
+            }
+        }
+    }
+    if root.tab == "devices": Panel {
+        VerticalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 12px;
+            padding-bottom: 10px;
+            spacing: 2px;
+            Text { text: "Virtual cables"; color: Theme.text; font-size: 15px; font-weight: 600; }
+            Text {
+                text: "Each channel runs through one VB-Audio cable. Pick the side Smowaudio listens on — the other side is set up for you. Changes apply immediately and briefly restart audio.";
+                color: Theme.muted;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+        }
+        for r in root.cable-rows: DeviceRow { data: r; picked(k, id) => { root.pick-device(k, id); } }
+    }
+    if root.tab == "devices": Panel {
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 12px;
+            padding-bottom: 10px;
+            spacing: 16px;
+            VerticalLayout {
+                spacing: 2px;
+                horizontal-stretch: 1;
+                Text { text: "Delay"; color: Theme.text; font-size: 15px; font-weight: 600; }
+                Text {
+                    text: "How long sound takes from an app to your output device, through VB-Cable and Smowaudio. Measuring plays three short, quiet beeps on each channel.";
+                    color: Theme.muted;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+            }
+            VerticalLayout {
+                alignment: start;
+                Rectangle {
+                    width: m-text.preferred-width + 24px;
+                    height: 32px;
+                    border-radius: 6px;
+                    background: Theme.text;
+                    opacity: root.delay.running ? 0.6 : 1;
+                    m-text := Text { text: root.delay.button; color: Theme.window; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea {
+                        mouse-cursor: root.delay.running ? MouseCursor.progress : MouseCursor.pointer;
+                        clicked => { if !root.delay.running { root.measure(); } }
+                    }
+                    accessible-role: button;
+                    accessible-label: root.delay.button;
+                    accessible-action-default => { if !root.delay.running { root.measure(); } }
+                }
+            }
+        }
+        VerticalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-bottom: 12px;
+            spacing: 8px;
+            if root.delay.rows.length == 0: Text { text: root.delay.empty; color: Theme.faint; font-size: 12px; }
+            if root.delay.rows.length > 0: HorizontalLayout {
+                spacing: 14px;
+                HorizontalLayout { spacing: 6px; Rectangle { width: 10px; height: 6px; y: (parent.height - 6px) / 2; border-radius: 2px; background: Theme.focus.mix(Theme.line-strong, 0.45); } Text { text: "VB-Cable"; color: Theme.muted; font-size: 11px; } }
+                HorizontalLayout { spacing: 6px; Rectangle { width: 10px; height: 6px; y: (parent.height - 6px) / 2; border-radius: 2px; background: Theme.focus; } Text { text: "Smowaudio + Windows"; color: Theme.muted; font-size: 11px; } }
+                Rectangle { horizontal-stretch: 1; }
+                Text { text: root.delay.measured; color: Theme.faint; font-size: 11px; }
+            }
+            for r in root.delay.rows: HorizontalLayout {
+                spacing: 12px;
+                height: 26px;
+                Rectangle {
+                    width: 70px;
+                    Tape { x: 0; y: (parent.height - self.height) / 2; label: ["Game", "Chat", "Media", "Aux"][r.channel]; tint: Theme.row-color(r.channel); }
+                }
+                if r.error != "": Text { text: r.error; color: Theme.hot; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                if r.error == "": Rectangle {
+                    horizontal-stretch: 1;
+                    height: 8px;
+                    y: (parent.height - 8px) / 2;
+                    border-radius: 3px;
+                    background: Theme.well;
+                    clip: true;
+                    Rectangle { x: 0; width: parent.width * r.cable; background: Theme.focus.mix(Theme.line-strong, 0.45); }
+                    Rectangle { x: parent.width * r.cable; width: parent.width * r.engine; background: Theme.focus; }
+                }
+                if r.error == "": Text { text: r.parts; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
+                if r.error == "": Text { width: 64px; text: r.total; color: Theme.text; font-size: 14px; font-weight: 600; horizontal-alignment: right; vertical-alignment: center; }
+            }
+        }
+        Rectangle { height: Px.hair(); background: Theme.line; }
+        Text {
+            x: 16px;
+            width: parent.width - 32px;
+            height: self.preferred-height + 22px;
+            text: "Your headphones or speakers add their own delay after this, which Windows can't measure: Bluetooth usually 100–250 ms, wired headphones and USB about 1–10 ms.";
+            color: Theme.faint;
+            font-size: 12px;
+            wrap: word-wrap;
+            vertical-alignment: center;
+        }
+    }
+
+    // ---------- General ----------
+    if root.tab == "general": Panel {
+        SettingRow {
+            first: true;
+            label: "Launch at Windows sign-in";
+            help: "Starts Smowaudio in the tray when you sign in.";
+            fit: true;
+            Switch { checked: root.launch-at-login; label: "Launch at Windows sign-in"; toggled(v) => { root.launch(v); } }
+        }
+        Rectangle {
+            height: defaults-col.preferred-height + 24px;
+            Rectangle { y: 0; height: Px.hair(); background: Theme.line; }
+            defaults-col := VerticalLayout {
+                x: 16px;
+                y: 12px;
+                width: parent.width - 32px - 60px;
+                height: self.preferred-height;
+                spacing: 2px;
+                Text { text: "Set Windows default devices"; color: Theme.text; font-size: 13px; }
+                Text { text: "While Smowaudio runs, Windows uses these defaults. Turning this off restores the ones you had before."; color: Theme.faint; font-size: 12px; wrap: word-wrap; }
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: start;
+                    padding-top: 6px;
+                    opacity: root.windows-defaults ? 1 : 0.45;
+                    for c in [{ k: "Playback", v: "Game", i: 0 }, { k: "Communications", v: "Chat", i: 1 }, { k: "Recording", v: "Virtual mic", i: 5 }]: Rectangle {
+                        width: chip.preferred-width + 16px;
+                        height: 24px;
+                        border-radius: 6px;
+                        background: Theme.raised;
+                        border-width: Px.hair();
+                        border-color: Theme.line;
+                        chip := HorizontalLayout {
+                            x: 8px;
+                            spacing: 5px;
+                            Text { text: c.k; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
+                            Text { text: c.v; color: c.i == 5 ? Theme.mic : Theme.row-color(c.i); font-size: 12px; font-weight: 500; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+            // Placed like SettingRow's control, so it lines up with the switch above.
+            HorizontalLayout {
+                x: parent.width - 16px - self.width;
+                y: (parent.height - 30px) / 2;
+                width: self.preferred-width;
+                height: 30px;
+                Switch {
+                    checked: root.windows-defaults;
+                    label: "Set Windows default devices";
+                    toggled(v) => { root.defaults(v); }
+                }
+            }
+        }
+    }
+    if root.tab == "general": Panel {
+        Health { health: root.health; expanded <=> root.health-expanded; retry => { root.retry(); } }
+        SettingRow {
+            label: "Log file";
+            help: "%APPDATA%\\Smowaudio\\smowaudio.log";
+            fit: true;
+            TextButton { text: "Open folder"; clicked => { root.open-log(); } }
+        }
+    }
+
+    // ---------- Shortcuts ----------
+    if root.tab == "shortcuts": HorizontalLayout {
+        spacing: 16px;
+        Text { text: "Shortcuts work anywhere in Windows, even while a game has focus."; color: Theme.muted; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
+        HorizontalLayout {
+            spacing: 8px;
+            Text { text: "Volume step"; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
+            Seg {
+                options: ["1%", "2%", "5%", "10%"];
+                current: round(root.volume-step * 100) + "%";
+                font-size: 12px;
+                picked(o) => {
+                    root.volume-step-changed(o == "1%" ? 0.01 : o == "2%" ? 0.02 : o == "5%" ? 0.05 : 0.1);
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            TextButton {
+                height: 28px;
+                text: "Reset all…";
+                enabled: root.any-shortcuts;
+                clicked => { if root.any-shortcuts { root.reset-shortcuts(); } }
+            }
+        }
+    }
+    if root.tab == "shortcuts": Rectangle {
+        background: Theme.panel;
+        border-width: Px.hair();
+        border-color: Theme.line;
+        border-radius: 8px;
+        clip: true;
+        height: max(groups.preferred-height, panel.preferred-height);
+        // Groups on the left.
+        groups := VerticalLayout {
+            x: 0;
+            width: 168px;
+            padding: 8px;
+            spacing: 2px;
+            alignment: start;
+            for g in root.shortcut-groups: Rectangle {
+                property <bool> sel: g.id == root.shortcut-group;
+                height: 32px;
+                border-radius: 6px;
+                background: sel ? Theme.raised : g-ta.has-hover ? Theme.raised.with-alpha(0.6) : transparent;
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 8px;
+                    if g.kind >= 0: VerticalLayout {
+                        alignment: center;
+                        Tape { label: g.title; tint: g.kind == 5 ? Theme.mic : Theme.row-color(g.kind); ink: g.kind == 4 ? Theme.master-ink : Theme.tape-ink; }
+                    }
+                    if g.kind < 0: Text {
+                        text: g.title.to-uppercase();
+                        color: Theme.muted;
+                        font-family: Theme.font-label;
+                        font-size: 13px;
+                        font-weight: 600;
+                        letter-spacing: 0.06 * 13px;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    if g.flagged: Rectangle { width: 6px; height: 6px; y: (parent.height - 6px) / 2; border-radius: 3px; background: Theme.warn; }
+                    Text {
+                        text: g.assigned + "/" + g.count;
+                        color: sel ? Theme.text : Theme.faint;
+                        font-family: Theme.font-num;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                }
+                g-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.shortcut-group-changed(g.id); }
+                }
+                accessible-role: AccessibleRole.tab;
+                accessible-label: g.title + ", " + g.assigned + " of " + g.count + " set";
+                accessible-item-selected: sel;
+                accessible-action-default => { root.shortcut-group-changed(g.id); }
+            }
+        }
+        Rectangle { x: 168px; width: Px.hair(); background: Theme.line; }
+        Rectangle { x: 0; width: 168px; background: Theme.window; z: -1; }
+        // The group's actions.
+        panel := VerticalLayout {
+            x: 169px;
+            width: parent.width - 169px;
+            alignment: start;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: 12px;
+                padding-bottom: 10px;
+                Text { text: root.shortcut-group-title; color: Theme.text; font-size: 15px; font-weight: 600; horizontal-stretch: 1; }
+                Text { text: "Click a shortcut, then press the keys"; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
+            }
+            for r in root.shortcut-rows: Rectangle {
+                background: r.clash ? Theme.warn.mix(Theme.panel, 0.06) : transparent;
+                height: row-col.preferred-height + 18px;
+                Rectangle { y: 0; height: Px.hair(); background: Theme.line; }
+                row-col := VerticalLayout {
+                    x: 16px;
+                    y: 9px;
+                    width: parent.width - 32px;
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: 10px;
+                        height: 28px;
+                        Text { text: r.label; color: Theme.text; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                        // The keys, or "Set", or "Press keys…" while recording.
+                        Rectangle {
+                            width: 200px;
+                            border-radius: 6px;
+                            border-width: Px.hair();
+                            border-color: r.recording ? Theme.focus : k-ta.has-hover ? Theme.line-strong : Theme.line;
+                            background: r.recording ? Theme.focus.mix(Theme.panel, 0.1) : r.keys.length == 0 ? transparent : Theme.raised;
+                            if r.recording && r.keys.length == 0: HorizontalLayout {
+                                alignment: center;
+                                spacing: 6px;
+                                Rectangle { width: 7px; height: 7px; y: (parent.height - 7px) / 2; border-radius: 3.5px; background: Theme.hot; }
+                                Text { text: "Press keys…"; color: Theme.focus; font-size: 12px; vertical-alignment: center; }
+                            }
+                            if r.keys.length > 0: Keycaps { keys: r.keys; }
+                            if !r.recording && r.keys.length == 0: Text { text: "Set"; color: Theme.faint; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                            k-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.record(r.action); }
+                            }
+                            accessible-role: button;
+                            accessible-label: r.label + ": " + (r.keys.length > 0 ? "set" : "not set") + ". Change shortcut";
+                            accessible-action-default => { root.record(r.action); }
+                        }
+                        Rectangle {
+                            width: 28px;
+                            if r.keys.length > 0 && !r.recording && !r.clash: Rectangle {
+                                width: 22px;
+                                height: 22px;
+                                x: 3px;
+                                y: 3px;
+                                border-radius: 6px;
+                                background: x-ta.has-hover ? Theme.raised : transparent;
+                                Text { text: "×"; color: x-ta.has-hover ? Theme.text : Theme.muted; font-size: 15px; horizontal-alignment: center; vertical-alignment: center; }
+                                x-ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.clear-shortcut(r.action); }
+                                }
+                                accessible-role: button;
+                                accessible-label: "Remove shortcut for " + r.label;
+                                accessible-action-default => { root.clear-shortcut(r.action); }
+                            }
+                        }
+                    }
+                    if r.note != "": HorizontalLayout {
+                        spacing: 12px;
+                        Text {
+                            text: r.note;
+                            color: r.note-kind == 1 ? Theme.warn : r.note-kind == 2 ? Theme.hot : Theme.muted;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                        }
+                        if r.clash: TextButton { height: 26px; text: "Use here, clear " + r.other; clicked => { root.use-here(r.action); } }
+                        if r.clash: TextButton { height: 26px; text: "Pick another"; clicked => { root.record(r.action); } }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------- Updates ----------
+    if root.tab == "updates": Panel {
+        Rectangle {
+            height: 64px;
+            VerticalLayout {
+                x: 16px;
+                y: (parent.height - self.height) / 2;
+                height: self.preferred-height;
+                spacing: 2px;
+                Text { text: "Version " + root.updates.version; color: Theme.text; font-family: Theme.font-num; font-size: 15px; font-weight: 500; }
+                Text {
+                    text: root.updates.state;
+                    color: root.updates.state-kind == 1 ? Theme.ok : root.updates.state-kind == 2 ? Theme.hot : Theme.faint;
+                    font-size: 12px;
+                }
+            }
+            HorizontalLayout {
+                x: parent.width - 16px - self.width;
+                y: (parent.height - 30px) / 2;
+                width: self.preferred-width;
+                height: 30px;
+                spacing: 8px;
+                if root.updates.available: Rectangle {
+                    width: i-text.preferred-width + 24px;
+                    border-radius: 6px;
+                    background: Theme.text;
+                    opacity: root.updates.installing ? 0.7 : 1;
+                    i-text := Text { text: root.updates.install-text; color: Theme.window; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { if !root.updates.installing { root.install-update(); } }
+                    }
+                    accessible-role: button;
+                    accessible-label: root.updates.install-text;
+                    accessible-action-default => { if !root.updates.installing { root.install-update(); } }
+                }
+                TextButton {
+                    text: root.updates.checking ? "Checking…" : "Check for updates";
+                    enabled: !root.updates.checking && !root.updates.installing;
+                    clicked => { if self.enabled { root.check-updates(); } }
+                }
+            }
+        }
+        SettingRow {
+            label: "Install updates automatically";
+            help: "Only while the window is closed and nothing is playing: right after Smowaudio starts, or once it's been quiet for 2 minutes. It comes back in the tray.";
+            fit: true;
+            Switch { checked: root.updates.auto; label: "Install updates automatically"; toggled(v) => { root.preference("auto_update", v); } }
+        }
+        if root.updates.progress >= 0: Rectangle {
+            height: 18px;
+            Rectangle {
+                x: 16px;
+                y: 0;
+                width: parent.width - 32px;
+                height: 4px;
+                border-radius: 2px;
+                background: Theme.well;
+                clip: true;
+                Rectangle { x: 0; width: parent.width * root.updates.progress; background: Theme.ok; }
+            }
+        }
+    }
+    if root.tab == "updates" && (root.updates.news.length > 0 || root.updates.news-plain != ""): Panel {
+        Text { x: 16px; height: 42px; text: root.updates.news-title; color: Theme.text; font-size: 15px; font-weight: 600; vertical-alignment: center; }
+        changes-news := VerticalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-bottom: 14px;
+            spacing: 10px;
+            if root.updates.news-plain != "": Text { text: root.updates.news-plain; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+            for e[i] in root.updates.news: ChangeView { entry: e; first: i == 0; }
+        }
+    }
+    if root.tab == "updates": Panel {
+        VerticalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 12px;
+            padding-bottom: 10px;
+            spacing: 2px;
+            Text { text: "Changelog"; color: Theme.text; font-size: 15px; font-weight: 600; }
+            Text { text: "What changed in each version."; color: Theme.muted; font-size: 12px; }
+        }
+        VerticalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-bottom: 14px;
+            spacing: 10px;
+            for e[i] in root.updates.history: ChangeView { entry: e; first: i == 0; }
+            if root.updates.more != "": HorizontalLayout {
+                alignment: start;
+                height: 28px;
+                TextButton { text: root.updates.more; clicked => { root.more-changelog(); } }
+            }
+        }
+    }
+}

@@ -420,6 +420,7 @@ export component Card inherits Rectangle {
             }
             if root.has-switch: VerticalLayout {
                 alignment: start;
+                horizontal-stretch: 0;
                 padding-top: 2px;
                 Switch {
                     checked <=> root.switch-on;
