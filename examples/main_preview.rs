@@ -40,5 +40,24 @@ fn main() {
         window.set_view("apps".into());
         window.on_move_app(|exe, ch| println!("move-app {exe} -> {ch}"));
     }
+    // Another view, and a window width in logical pixels: `main_preview dark mic 1000`.
+    if let Some(view) = std::env::args().nth(2).filter(|v| v != "apps") {
+        // "mic:input" opens the Mic view on that step,
+        let (view, step) = view.split_once(':').map_or((view.as_str(), None), |(v, s)| (v, Some(s)));
+        window.set_view(view.into());
+        // "settings:general" on that tab.
+        match (view, step) {
+            ("settings", Some(tab)) => window.set_settings_tab(tab.into()),
+            (_, Some(step)) => window.set_mic_step(step.into()),
+            _ => {}
+        }
+        let mut mic = window.get_mic_data();
+        mic.input_text = "No microphone found. Connect one, or pick a specific device in Settings. A mic you plug in later is picked up automatically.".into();
+        mic.virtual_mic = "CABLE-C Output".into();
+        window.set_mic_data(mic);
+    }
+    if let Some(width) = std::env::args().nth(3).and_then(|w| w.parse::<f32>().ok()) {
+        window.window().set_size(slint::LogicalSize::new(width, 760.0));
+    }
     window.run().unwrap();
 }

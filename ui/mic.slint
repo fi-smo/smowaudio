@@ -141,6 +141,9 @@ export component MicView inherits VerticalLayout {
     in property <MicData> mic;
     in property <[ChainTab]> chain;
     in-out property <string> selected: "denoise";
+    // Hints in the step card wrap at this width. Text that wraps inside an `if` is otherwise
+    // measured at a stale width, one line short, and spills out of the card.
+    property <length> hint-width: step-column.width - 32px;
     in property <EqData> eq;
     in-out property <int> eq-selected: -1;
     callback set(string, float); // a setting by name (see mainwin.rs)
@@ -268,7 +271,7 @@ export component MicView inherits VerticalLayout {
         spacing: 12px;
         alignment: start;
         // The step card.
-        VerticalLayout {
+        step-column := VerticalLayout {
             width: (detail.width - 12px) * 1.25 / 2.25;
             alignment: start;
             Card {
@@ -299,7 +302,7 @@ export component MicView inherits VerticalLayout {
 
                 // Mic input.
                 if step == "input": Section {
-                    Hint { text: root.mic.input-text; }
+                    Hint { width: root.hint-width; text: root.mic.input-text; }
                     HorizontalLayout {
                         alignment: start;
                         height: 28px;
@@ -337,7 +340,7 @@ export component MicView inherits VerticalLayout {
                         text: "Low-latency model";
                         toggled(v) => { root.toggle("low_latency", v); }
                     }
-                    Hint { text: root.mic.low-latency ? "Model delay 10 ms. Slightly less clean and uses more CPU." : "Model delay 30 ms. The low-latency model saves 20 ms."; }
+                    Hint { width: root.hint-width; text: root.mic.low-latency ? "Model delay 10 ms. Slightly less clean and uses more CPU." : "Model delay 30 ms. The low-latency model saves 20 ms."; }
                 }
                 // Noise gate: the threshold slider's track is the live input meter.
                 if step == "gate": Section {
@@ -480,7 +483,7 @@ export component MicView inherits VerticalLayout {
                 }
                 // Virtual mic.
                 if step == "output": Section {
-                    Hint { text: "In Discord, OBS or TeamSpeak choose " + root.mic.virtual-mic + " as the microphone, and turn off their own noise suppression."; }
+                    Hint { width: root.hint-width; text: "In Discord, OBS or TeamSpeak choose " + root.mic.virtual-mic + " as the microphone, and turn off their own noise suppression."; }
                 }
                 if step == "output": Section {
                     SliderRow { label: "Output gain"; shown: Fmt.db-int(root.mic.gain); minimum: -20; maximum: 20; step: 0.5; value: root.mic.gain; changed(v) => { root.set("gain", v); } }

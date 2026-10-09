@@ -626,14 +626,15 @@ export component SettingsView inherits VerticalLayout {
                     padding-top: 6px;
                     opacity: root.windows-defaults ? 1 : 0.45;
                     for c in [{ k: "Playback", v: "Game", i: 0 }, { k: "Communications", v: "Chat", i: 1 }, { k: "Recording", v: "Virtual mic", i: 5 }]: Rectangle {
-                        width: chip.preferred-width + 16px;
+                        width: chip.preferred-width;
                         height: 24px;
                         border-radius: 6px;
                         background: Theme.raised;
                         border-width: Px.hair();
                         border-color: Theme.line;
                         chip := HorizontalLayout {
-                            x: 8px;
+                            padding-left: 8px;
+                            padding-right: 8px;
                             spacing: 5px;
                             Text { text: c.k; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
                             Text { text: c.v; color: c.i == 5 ? Theme.mic : Theme.row-color(c.i); font-size: 12px; font-weight: 500; vertical-alignment: center; }
