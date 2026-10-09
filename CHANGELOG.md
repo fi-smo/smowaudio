@@ -3,6 +3,12 @@
 Every release needs a section here: the release build takes its notes from it, and the app shows
 them under Settings → Updates.
 
+## 0.10.0 — 2026-10-09
+- Smowaudio no longer needs a browser engine (WebView2): every window, from the mixer to the tray flyout, is drawn natively
+- The tray flyout reacts to the scroll wheel as soon as it opens, and stays sharp at 125 % and 150 % display scaling
+- Faders snap to 100 % only while you drag them, so the scroll wheel and arrow keys can move them in small steps
+- Uninstalling also removes the sign-in task
+
 ## 0.9.4 — 2026-10-08
 - The tray flyout has a Master volume slider with its own mute and level meter
 
