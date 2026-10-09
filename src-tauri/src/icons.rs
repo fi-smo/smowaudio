@@ -1,5 +1,5 @@
-//! App icons for the Apps view: the exe's own icon as a PNG data URL, so the UI can show it
-//! with a plain <img>.
+//! App icons for the Apps view and the Mixer strips: the exe's own icon, as RGBA pixels for the
+//! native window or as a PNG data URL for the WebView one.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -24,6 +24,18 @@ pub fn app_icon(path: &str) -> Option<String> {
     let url = extract(path).map(|(w, h, rgba)| format!("data:image/png;base64,{}", base64(&png(w, h, &rgba))));
     cache.lock().insert(path.to_string(), url.clone());
     url
+}
+
+/// The exe's first icon at 48 px as RGBA pixels (width, height, pixels), or None. Cached per path.
+pub fn app_icon_rgba(path: &str) -> Option<std::sync::Arc<(u32, u32, Vec<u8>)>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<std::sync::Arc<(u32, u32, Vec<u8>)>>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(hit) = cache.lock().get(path) {
+        return hit.clone();
+    }
+    let icon = extract(path).map(std::sync::Arc::new);
+    cache.lock().insert(path.to_string(), icon.clone());
+    icon
 }
 
 fn extract(path: &str) -> Option<(u32, u32, Vec<u8>)> {

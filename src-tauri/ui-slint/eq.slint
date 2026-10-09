@@ -1,0 +1,234 @@
+// The EQ editor (the Mixer's drawer and the Mic tab): header with the On switch, presets and
+// close, the response curve with draggable points, and a card per band. The curve and points come
+// from Rust (eqedit.rs): x in a 1000-wide viewbox, y in logical pixels of a graph `eq.height` tall.
+
+import { Theme, Px, Tape, Switch, Seg } from "common.slint";
+
+export struct EqBandData {
+    kind: string, // "Low shelf"
+    value: string, // "100 Hz · +6.0 dB"
+    x: float, // 0..1 across the graph
+    y: float, // logical pixels from the top
+    on: bool,
+}
+
+export struct EqData {
+    enabled: bool,
+    preset: string,
+    curve: string, // path commands
+    area: string, // the curve closed along 0 dB
+    bands: [EqBandData],
+    height: float, // the graph's height the curve was made for
+}
+
+export component EqEditor inherits VerticalLayout {
+    in property <EqData> eq;
+    in property <color> tint;
+    // Shown before "Equalizer" in the drawer (the channel's tape); empty in the Mic tab.
+    in property <string> tape;
+    in property <color> tape-ink: Theme.tape-ink;
+    in property <bool> title;
+    in property <bool> show-switch: true;
+    in property <bool> closable;
+    in-out property <int> selected: -1;
+    callback toggled(bool);
+    callback preset(string);
+    // The band under (x, y) within `radius` px in a graph w × h, or -1.
+    callback pick(float, float, float, float, float) -> int;
+    callback drag(int, float, float, float, float);
+    callback widen(int, bool);
+    callback close;
+    property <color> c: eq.enabled ? tint : Theme.faint;
+    property <length> h: eq.height * 1px;
+    spacing: 10px;
+
+    // Header.
+    HorizontalLayout {
+        spacing: 12px;
+        if root.tape != "": VerticalLayout {
+            alignment: center;
+            Tape { label: root.tape; tint: root.tint; ink: root.tape-ink; height: 22px; font-size: 15px; pad: 8px; }
+        }
+        if root.title: Text {
+            text: "Equalizer";
+            color: Theme.text;
+            font-size: 15px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+        if root.show-switch: Switch {
+            checked: root.eq.enabled;
+            text: root.eq.enabled ? "On" : "Off";
+            tint: root.tint;
+            toggled(on) => { root.toggled(on); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        VerticalLayout {
+            alignment: center;
+            Seg {
+                options: ["Flat", "Footsteps", "Bass boost", "Voice clarity", "Night", "Custom"];
+                current: root.eq.preset;
+                disabled: root.eq.preset == "Custom" ? [] : ["Custom"];
+                font-size: 12px;
+                picked(p) => { root.preset(p); }
+            }
+        }
+        if root.closable: Rectangle {
+            width: 32px;
+            border-radius: 6px;
+            background: close-ta.has-hover ? Theme.raised : transparent;
+            Text {
+                text: "×";
+                color: close-ta.has-hover ? Theme.text : Theme.muted;
+                font-size: 18px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            close-ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.close(); }
+            }
+            accessible-role: button;
+            accessible-label: "Close equalizer";
+            accessible-action-default => { root.close(); }
+        }
+    }
+
+    // The graph.
+    graph := Rectangle {
+        height: root.h;
+        background: Theme.well;
+        border-radius: 6px;
+        clip: true;
+        // Frequency lines and labels: 50 Hz .. 10 kHz.
+        for f in [50, 100, 200, 500, 1000, 2000, 5000, 10000]: Rectangle {
+            property <length> fx: Px.align(log(f / 20, 10) / 3 * graph.width, graph.absolute-position.x);
+            x: fx;
+            width: Px.hair();
+            background: Theme.line;
+            Text {
+                x: 4px;
+                y: parent.height - 17px;
+                text: f >= 1000 ? (f / 1000) + "k" : f;
+                color: Theme.faint;
+                font-family: Theme.font-num;
+                font-size: 11px;
+            }
+        }
+        // Gain lines and labels: ±12 dB, 0 dB a little stronger.
+        for g in [-12, -6, 0, 6, 12]: Rectangle {
+            y: Px.align(root.h / 2 - g / 15 * (root.h / 2 - 12px), graph.absolute-position.y);
+            height: g == 0 ? Px.hair() * 1.5 : Px.hair();
+            background: Theme.line;
+            Text {
+                x: 6px;
+                y: -15px;
+                text: g == 0 ? "0 dB" : (g > 0 ? "+" : "−") + abs(g);
+                color: Theme.faint;
+                font-family: Theme.font-num;
+                font-size: 11px;
+            }
+        }
+        // The curve over a faint fill down to 0 dB.
+        Path {
+            commands: root.eq.area;
+            viewbox-width: 1000;
+            viewbox-height: root.eq.height;
+            fit: fill;
+            fill: root.c.with-alpha(0.14);
+            stroke-width: 0;
+        }
+        Path {
+            commands: root.eq.curve;
+            viewbox-width: 1000;
+            viewbox-height: root.eq.height;
+            fit: fill;
+            fill: transparent;
+            stroke: root.c;
+            stroke-width: 2.5px;
+            stroke-line-join: round;
+        }
+        // Points; the selected one larger with a ring.
+        for b[i] in root.eq.bands: Rectangle {
+            property <bool> sel: i == root.selected;
+            property <length> r: sel ? 7px : 5.5px;
+            x: b.x * graph.width - r;
+            y: b.y * 1px - r;
+            width: 2 * r;
+            height: 2 * r;
+            border-radius: r;
+            background: b.on ? root.c : Theme.faint;
+            if sel: Rectangle {
+                x: -4.5px;
+                y: -4.5px;
+                width: parent.width + 9px;
+                height: parent.height + 9px;
+                border-radius: self.width / 2;
+                border-width: 4px;
+                border-color: root.c.with-alpha(0.3);
+                background: transparent;
+            }
+        }
+        ta := TouchArea {
+            property <int> dragging: -1;
+            mouse-cursor: crosshair;
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                    self.dragging = root.pick(self.mouse-x / 1px, self.mouse-y / 1px, graph.width / 1px, root.h / 1px, 16);
+                    if self.dragging >= 0 { root.selected = self.dragging; }
+                }
+                if e.kind == PointerEventKind.up { self.dragging = -1; }
+            }
+            moved => {
+                if self.pressed && self.dragging >= 0 {
+                    root.drag(self.dragging, max(0, min(graph.width, self.mouse-x)) / 1px, max(0, min(root.h, self.mouse-y)) / 1px, graph.width / 1px, root.h / 1px);
+                }
+            }
+            scroll-event(e) => {
+                let i = root.pick(self.mouse-x / 1px, self.mouse-y / 1px, graph.width / 1px, root.h / 1px, 22);
+                if i < 0 { return reject; }
+                root.selected = i;
+                root.widen(i, e.delta-y > 0);
+                accept
+            }
+        }
+        accessible-role: image;
+        accessible-label: "Equalizer curve";
+    }
+
+    // A card per band.
+    HorizontalLayout {
+        spacing: 8px;
+        for b[i] in root.eq.bands: Rectangle {
+            property <bool> sel: i == root.selected;
+            horizontal-stretch: 1;
+            min-width: 0;
+            height: 44px;
+            border-radius: 6px;
+            border-width: Px.hair();
+            border-color: sel ? root.tint : Theme.line;
+            background: Theme.raised;
+            VerticalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                alignment: center;
+                spacing: 1px;
+                Text { text: b.kind; color: Theme.faint; font-size: 11px; }
+                Text { text: b.value; color: Theme.text; font-family: Theme.font-num; font-size: 13px; font-weight: 500; overflow: elide; }
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.selected = i; }
+            }
+            accessible-role: button;
+            accessible-label: b.kind + " " + b.value;
+            accessible-checked: sel;
+            accessible-action-default => { root.selected = i; }
+        }
+    }
+    Text {
+        text: "Drag a point to shape the sound. Scroll over a point to make it wider or narrower.";
+        color: Theme.faint;
+        font-size: 12px;
+    }
+}

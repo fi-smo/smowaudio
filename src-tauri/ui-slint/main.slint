@@ -4,8 +4,9 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme, Px, Icon } from "common.slint";
 import { MixerView, StripData } from "mixer.slint";
+import { EqData, EqBandData } from "eq.slint";
 
-export { StripData }
+export { StripData, EqData, EqBandData }
 
 /// One section button in the rail: an icon over its name.
 component RailButton inherits Rectangle {
@@ -112,6 +113,14 @@ export component MainWindow inherits Window {
     in property <StripData> master;
     in property <StripData> mic;
     in property <string> buffer: "–";
+    in property <int> eq-open: -1;
+    in property <EqData> eq;
+    in-out property <int> eq-selected: -1;
+    callback eq-toggled(bool);
+    callback eq-preset(string);
+    callback eq-pick(float, float, float, float, float) -> int;
+    callback eq-drag(int, float, float, float, float);
+    callback eq-widen(int, bool);
 
     callback view-changed(string);
     callback strip-volume(int, float);
@@ -231,12 +240,14 @@ export component MainWindow inherits Window {
                     }
                 }
                 Rectangle {
+                    x: 0;
+                    width: parent.width;
                     y: parent.height - Px.hair();
                     height: Px.hair();
                     background: Theme.line;
                 }
             }
-            ScrollView {
+            scroll := ScrollView {
                 content-height: page.preferred-height;
                 content-width: self.visible-width;
                 page := VerticalLayout {
@@ -246,6 +257,8 @@ export component MainWindow inherits Window {
                     padding-top: 18px;
                     padding-bottom: 24px;
                     if root.view == "mixer": MixerView {
+                        // The scroll area less the page's padding.
+                        available-height: scroll.visible-height - 42px;
                         channels: root.channels;
                         master: root.master;
                         mic: root.mic;
@@ -254,6 +267,14 @@ export component MainWindow inherits Window {
                         mute(i) => { root.strip-mute(i); }
                         feature(i) => { root.strip-feature(i); }
                         buffer-clicked => { root.buffer-clicked(); }
+                        eq-open: root.eq-open;
+                        eq: root.eq;
+                        eq-selected <=> root.eq-selected;
+                        eq-toggled(on) => { root.eq-toggled(on); }
+                        eq-preset(p) => { root.eq-preset(p); }
+                        eq-pick(x, y, w, h, r) => { root.eq-pick(x, y, w, h, r) }
+                        eq-drag(i, x, y, w, h) => { root.eq-drag(i, x, y, w, h); }
+                        eq-widen(i, n) => { root.eq-widen(i, n); }
                     }
                     if root.view != "mixer": Text {
                         text: "This section isn't in the native window yet.";

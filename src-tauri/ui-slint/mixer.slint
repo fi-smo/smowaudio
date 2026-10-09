@@ -2,8 +2,21 @@
 // dotted meters, a fader, a readout and a mute + feature button.
 
 import { Theme, Px, Icon, Tape, Btn, SpeakerIcon } from "common.slint";
+import { EqEditor, EqData } from "eq.slint";
+
+/// An app on a strip or a card: its own icon, or its first letter until there is one.
+export struct AppIcon {
+    image: image,
+    has-image: bool,
+    letter: string,
+    name: string,
+    live: bool, // playing right now
+}
 
 export struct StripData {
+    // Apps placed on this channel (up to five), and how many more there are.
+    apps: [AppIcon],
+    more-apps: int,
     name: string,
     // Cable or role under the name ("CABLE-A", "Output", the virtual mic's name).
     sub: string,
@@ -22,6 +35,38 @@ export struct StripData {
     feature-v: string, // "Off", "0.0 dB", "4 of 5 on"
     feature-open: bool, // the EQ drawer for this strip is open
     feature-static: bool, // a readout, not a button (Master's limiter)
+}
+
+/// A small app icon (22px), outlined in the channel colour while the app plays. Apps without an
+/// icon get a tile with their first letter.
+export component AppBadge inherits Rectangle {
+    in property <AppIcon> app;
+    in property <color> tint;
+    in property <length> size: 22px;
+    width: size;
+    height: size;
+    border-radius: 6px;
+    background: app.has-image ? transparent : Theme.raised;
+    border-width: Px.hair();
+    border-color: app.live ? tint.mix(Theme.line, 0.55) : app.has-image ? transparent : Theme.line;
+    if app.has-image: Image {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: root.size - 4px;
+        height: root.size - 4px;
+        source: root.app.image;
+        image-fit: contain;
+    }
+    if !app.has-image: Text {
+        text: root.app.letter;
+        color: root.app.live ? Theme.text : Theme.muted;
+        font-size: 11px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    accessible-role: image;
+    accessible-label: root.app.name + (root.app.live ? " (playing)" : "");
 }
 
 /// A dotted vertical meter: 3px segments with 2px gaps, lit from the bottom in green, then
@@ -50,7 +95,7 @@ component VMeter inherits Rectangle {
             : i >= count * 0.7 ? Theme.warn
             : Theme.ok;
     }
-    if peak > 0: Rectangle {
+    if peak > 0.01: Rectangle {
         y: Px.align(root.height * (1 - peak), root.absolute-position.y);
         height: Px.align(2px, 0);
         background: Theme.text.with-alpha(0.7);
@@ -250,14 +295,24 @@ export component Strip inherits Rectangle {
                 horizontal-stretch: 1;
             }
         }
-        // Apps or device.
-        Text {
+        // Apps (their icons), or the note: the device, "No apps yet".
+        HorizontalLayout {
             height: 22px;
-            text: root.data.note;
-            color: Theme.faint;
-            font-size: 12px;
-            vertical-alignment: center;
-            overflow: elide;
+            spacing: 4px;
+            for a in root.data.apps: AppBadge { app: a; tint: root.c; }
+            if root.data.more-apps > 0: Text {
+                text: "+" + root.data.more-apps;
+                color: Theme.faint;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+            if root.data.apps.length == 0: Text {
+                text: root.data.note;
+                color: Theme.faint;
+                font-size: 12px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
         }
         // dB scale, meters, fader.
         Rectangle {
@@ -374,12 +429,26 @@ export component MixerView inherits VerticalLayout {
     in property <StripData> master;
     in property <StripData> mic;
     in property <string> buffer: "–";
-    in property <length> fader-height: 190px;
+    // The scroll area's height: faders shrink from 190 down to 140px so the Mixer, with the EQ
+    // drawer open, fits without scrolling (like the old page's fitMixer).
+    in property <length> available-height: 10000px;
+    property <length> drawer-h: root.eq-open >= 0 ? drawer.height + 16px : 0;
+    // Everything but the faders: title (66), group label (24), a strip without its fader (154).
+    property <length> fader-height: max(140px, min(190px, root.available-height - 66px - 24px - 154px - drawer-h - 8px));
     // Strip indices: 0..3 channels, 4 Master, 5 Mic.
     callback volume(int, float);
     callback mute(int);
     callback feature(int);
     callback buffer-clicked;
+    // The EQ drawer: which channel's EQ is open (-1 = none) and what it shows.
+    in property <int> eq-open: -1;
+    in property <EqData> eq;
+    in-out property <int> eq-selected: -1;
+    callback eq-toggled(bool);
+    callback eq-preset(string);
+    callback eq-pick(float, float, float, float, float) -> int;
+    callback eq-drag(int, float, float, float, float);
+    callback eq-widen(int, bool);
     spacing: 16px;
 
     // Title, explanation, Buffer pill.
@@ -495,6 +564,34 @@ export component MixerView inherits VerticalLayout {
                 mute => { root.mute(5); }
                 feature => { root.feature(5); }
             }
+        }
+    }
+
+    // The open channel's EQ, under the strips.
+    drawer := Rectangle {
+        visible: root.eq-open >= 0;
+        height: root.eq-open >= 0 ? editor.preferred-height + 26px : 0;
+        property <color> c: Theme.row-color(max(0, root.eq-open));
+        background: Theme.panel;
+        border-width: Px.hair();
+        border-color: c.mix(Theme.line, 0.45);
+        border-radius: 8px;
+        editor := EqEditor {
+            x: 16px;
+            y: 12px;
+            width: parent.width - 32px;
+            eq: root.eq;
+            tint: parent.c;
+            tape: root.eq-open >= 0 ? root.channels[root.eq-open].name : "";
+            title: true;
+            closable: true;
+            selected <=> root.eq-selected;
+            toggled(on) => { root.eq-toggled(on); }
+            preset(p) => { root.eq-preset(p); }
+            pick(x, y, w, h, r) => { root.eq-pick(x, y, w, h, r) }
+            drag(i, x, y, w, h) => { root.eq-drag(i, x, y, w, h); }
+            widen(i, n) => { root.eq-widen(i, n); }
+            close => { root.feature(root.eq-open); }
         }
     }
 }

@@ -13,7 +13,7 @@ use tauri::{AppHandle, Listener, Manager};
 use crate::audio::device::{self, DeviceInfo, Flow};
 use crate::config::{Config, CHANNEL_COUNT, CHANNEL_NAMES};
 use crate::flyout::{device_missing, meter_fraction, short_name};
-use crate::ui::{MainWindow, Px, StripData, Theme};
+use crate::ui::{AppIcon, MainWindow, Px, StripData, Theme};
 use crate::{audio, notify_config_changed, AppState};
 
 const MAX_VOLUME: f32 = 1.5;
@@ -35,7 +35,12 @@ struct Main {
     holds: [[(f32, Instant); 2]; CHANNEL_COUNT + 2],
     meter_timer: slint::Timer,
     refresh_timer: slint::Timer,
+    /// The channel whose EQ drawer is open.
+    eq_open: Option<usize>,
 }
+
+/// Height of the Mixer's EQ graph, in logical pixels.
+const DRAWER_GRAPH: f32 = 118.0;
 
 /// Opens the native main window (creating it the first time). Call from any thread.
 pub fn open(app: &AppHandle) {
@@ -64,6 +69,7 @@ fn create(app: &AppHandle) -> Result<(), slint::PlatformError> {
             holds: [[(0.0, Instant::now()); 2]; CHANNEL_COUNT + 2],
             meter_timer: slint::Timer::default(),
             refresh_timer: slint::Timer::default(),
+            eq_open: None,
         })
     });
     // Settings changed elsewhere (flyout, shortcuts, the old window): show them right away.
@@ -84,7 +90,10 @@ fn show(app: &AppHandle) {
         let m = m.borrow();
         let Some(m) = m.as_ref() else { return };
         m.window.global::<Theme>().set_dark(!crate::apps_use_light_theme());
-        let _ = m.window.show();
+        if let Err(e) = m.window.show() {
+            crate::append_log(&format!("native main window didn't open: {e}"));
+            return;
+        }
         m.window.global::<Px>().set_scale(m.window.window().scale_factor());
         let handle = app.clone();
         m.meter_timer.start(slint::TimerMode::Repeated, METER_EVERY, move || update_meters(&handle));
@@ -140,15 +149,28 @@ fn wire_callbacks(window: &MainWindow, app: &AppHandle) {
         notify_config_changed(&handle, "main-native");
         refresh(&handle);
     });
-    let weak = window.as_weak();
+    let handle = app.clone();
     window.on_strip_feature(move |strip| {
-        // Mic: its chain lives in the Mic view. The channels' EQ drawer comes with the EQ editor.
-        if strip as usize == CHANNEL_COUNT + 1 {
-            if let Some(w) = weak.upgrade() {
-                w.set_view("mic".into());
-            }
+        let strip = strip as usize;
+        if strip < CHANNEL_COUNT {
+            // A channel's EQ button opens its drawer, or closes it if it's open.
+            MAIN.with(|m| {
+                if let Some(m) = m.borrow_mut().as_mut() {
+                    m.eq_open = if m.eq_open == Some(strip) { None } else { Some(strip) };
+                    m.window.set_eq_selected(-1);
+                }
+            });
+            refresh(&handle);
+        } else if strip == CHANNEL_COUNT + 1 {
+            // The Mic's chain lives in the Mic view.
+            MAIN.with(|m| {
+                if let Some(m) = m.borrow().as_ref() {
+                    m.window.set_view("mic".into());
+                }
+            });
         }
     });
+    wire_eq(window, app);
     let weak = window.as_weak();
     window.on_buffer_clicked(move || {
         if let Some(w) = weak.upgrade() {
@@ -169,10 +191,142 @@ fn wire_callbacks(window: &MainWindow, app: &AppHandle) {
     });
 }
 
+/// The open drawer's channel, if any.
+fn eq_open() -> Option<usize> {
+    MAIN.with(|m| m.borrow().as_ref().and_then(|m| m.eq_open))
+}
+
+/// Changes the open drawer's channel EQ, applies it and redraws the drawer.
+fn edit_eq(app: &AppHandle, change: impl FnOnce(&mut crate::dsp::chain::EqSettings)) {
+    let Some(ch) = eq_open() else { return };
+    let state = app.state::<AppState>();
+    let mut settings = state.config.lock().channels[ch].settings.clone();
+    change(&mut settings.eq);
+    let eq = settings.eq.clone();
+    state.set_channel_settings(ch, settings);
+    notify_config_changed(app, "main-native");
+    MAIN.with(|m| {
+        if let Some(m) = m.borrow().as_ref() {
+            m.window.set_eq(crate::eqedit::view(&eq, DRAWER_GRAPH));
+            if let Some(mut strip) = m.channels.row_data(ch) {
+                strip.feature_v = if eq.enabled { eq.preset.as_str().into() } else { "Off".into() };
+                m.channels.set_row_data(ch, strip);
+            }
+        }
+    });
+}
+
+fn wire_eq(window: &MainWindow, app: &AppHandle) {
+    let handle = app.clone();
+    window.on_eq_toggled(move |on| edit_eq(&handle, |eq| eq.enabled = on));
+    let handle = app.clone();
+    window.on_eq_preset(move |name| edit_eq(&handle, |eq| crate::eqedit::apply_preset(eq, &name)));
+    let handle = app.clone();
+    window.on_eq_pick(move |x, y, w, h, radius| {
+        let Some(ch) = eq_open() else { return -1 };
+        let eq = handle.state::<AppState>().config.lock().channels[ch].settings.eq.clone();
+        crate::eqedit::pick(&eq, x, y, w, h, radius).map_or(-1, |i| i as i32)
+    });
+    let handle = app.clone();
+    window.on_eq_drag(move |i, x, y, w, h| edit_eq(&handle, |eq| crate::eqedit::drag(eq, i as usize, x, y, w, h)));
+    let handle = app.clone();
+    window.on_eq_widen(move |i, narrower| edit_eq(&handle, |eq| crate::eqedit::widen(eq, i as usize, narrower)));
+}
+
 fn refresh_if_visible(app: &AppHandle) {
     let visible = MAIN.with(|m| m.borrow().as_ref().is_some_and(|m| m.window.window().is_visible()));
     if visible {
         refresh(app);
+    }
+}
+
+/// Apps playing audio, one per exe (its processes merged), sorted by name.
+#[derive(Clone)]
+pub(crate) struct App {
+    pub exe: String,
+    pub name: String,
+    pub path: String,
+    pub pids: Vec<u32>,
+    pub active: bool,
+    pub assigned_device: Option<String>,
+    pub playing_on: Vec<String>,
+}
+
+pub(crate) fn group_apps(list: Vec<crate::audio::routing::AudioApp>) -> Vec<App> {
+    let mut by_exe: Vec<App> = Vec::new();
+    for a in list {
+        if let Some(g) = by_exe.iter_mut().find(|g| g.exe == a.exe) {
+            g.pids.push(a.pid);
+            g.active |= a.active;
+            if g.assigned_device.is_none() {
+                g.assigned_device = a.assigned_device;
+            }
+            for id in a.playing_on {
+                if !g.playing_on.contains(&id) {
+                    g.playing_on.push(id);
+                }
+            }
+        } else {
+            by_exe.push(App {
+                exe: a.exe,
+                name: a.name,
+                path: a.path,
+                pids: vec![a.pid],
+                active: a.active,
+                assigned_device: a.assigned_device,
+                playing_on: a.playing_on,
+            });
+        }
+    }
+    by_exe.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    by_exe
+}
+
+/// The channel an app plays on, and whether it was placed there (or just follows the default,
+/// Game): its rule, else the cable it's routed to.
+pub(crate) fn channel_of(config: &Config, app: &App) -> (usize, bool) {
+    if let Some(&ch) = config.app_rules.get(&app.exe) {
+        if ch < CHANNEL_COUNT {
+            return (ch, true);
+        }
+    }
+    if let Some(i) = config.channels.iter().position(|c| c.sink.is_some() && c.sink == app.assigned_device) {
+        return (i, true);
+    }
+    (0, false)
+}
+
+thread_local! {
+    static ICONS: RefCell<std::collections::HashMap<String, Option<slint::Image>>> = RefCell::new(Default::default());
+}
+
+/// The app's own icon as an image for the native windows, cached per path.
+pub(crate) fn icon_image(path: &str) -> Option<slint::Image> {
+    if path.is_empty() {
+        return None;
+    }
+    ICONS.with(|cache| {
+        cache
+            .borrow_mut()
+            .entry(path.to_string())
+            .or_insert_with(|| {
+                crate::icons::app_icon_rgba(path).map(|icon| {
+                    let (w, h, rgba) = &*icon;
+                    slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(rgba, *w, *h))
+                })
+            })
+            .clone()
+    })
+}
+
+pub(crate) fn app_icon(app: &App) -> AppIcon {
+    let image = icon_image(&app.path);
+    AppIcon {
+        has_image: image.is_some(),
+        image: image.unwrap_or_default(),
+        letter: app.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default().into(),
+        name: app.name.as_str().into(),
+        live: app.active,
     }
 }
 
@@ -216,7 +370,7 @@ fn refresh(app: &AppHandle) {
     };
     let active_output = resolve(Flow::Render, &config.output_device);
     let active_mic = resolve(Flow::Capture, &config.mic_device);
-    let apps = crate::audio::routing::list_apps().unwrap_or_default();
+    let apps = group_apps(crate::audio::routing::list_apps().unwrap_or_default());
 
     MAIN.with(|m| {
         let m = m.borrow();
@@ -226,35 +380,26 @@ fn refresh(app: &AppHandle) {
         // Channels.
         for (i, ch) in config.channels.iter().enumerate() {
             let old = m.channels.row_data(i);
-            // Apps placed on this channel (by rule, or already routed to its cable).
-            let mut names: Vec<String> = apps
-                .iter()
-                .filter(|a| {
-                    config.app_rules.get(&a.exe).copied() == Some(i)
-                        || (ch.sink.is_some() && a.assigned_device == ch.sink && !config.app_rules.contains_key(&a.exe))
-                })
-                .map(|a| a.name.clone())
-                .collect();
-            names.dedup();
-            let note = if ch.source.is_none() {
-                "Pick a cable in Settings".to_string()
-            } else if names.is_empty() {
-                "No apps yet".to_string()
-            } else {
-                names.join(", ")
-            };
+            // Apps on this channel: up to five icons, then "+N". Unplaced apps play on Game.
+            let on_channel: Vec<&App> = apps.iter().filter(|a| channel_of(&config, a).0 == i).collect();
+            let icons: Vec<AppIcon> =
+                if ch.source.is_some() { on_channel.iter().take(5).map(|a| app_icon(a)).collect() } else { Vec::new() };
+            let more = if ch.source.is_some() { on_channel.len().saturating_sub(5) as i32 } else { 0 };
+            let note = if ch.source.is_none() { "Pick a cable in Settings" } else { "No apps yet" };
             let s = &ch.settings;
             let strip = StripData {
                 name: CHANNEL_NAMES[i].into(),
                 sub: cable_label(&devices, &ch.source).into(),
                 note: note.into(),
+                apps: ModelRc::from(Rc::new(VecModel::from(icons))),
+                more_apps: more,
                 kind: i as i32,
                 volume: s.volume,
                 muted: s.muted,
                 readout: fmt_db(db_of(s.volume)).into(),
                 feature_k: "EQ".into(),
                 feature_v: if s.eq.enabled { s.eq.preset.as_str().into() } else { "Off".into() },
-                feature_open: false,
+                feature_open: m.eq_open == Some(i),
                 feature_static: false,
                 ..old.unwrap_or_default()
             };
@@ -263,6 +408,12 @@ fn refresh(app: &AppHandle) {
             } else {
                 m.channels.push(strip);
             }
+        }
+
+        // The EQ drawer.
+        w.set_eq_open(m.eq_open.map_or(-1, |c| c as i32));
+        if let Some(ch) = m.eq_open {
+            w.set_eq(crate::eqedit::view(&config.channels[ch].settings.eq, DRAWER_GRAPH));
         }
 
         // Master.

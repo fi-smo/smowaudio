@@ -4,6 +4,7 @@ mod audio;
 mod config;
 mod dsp;
 mod engine;
+mod eqedit;
 mod flyout;
 mod mainwin;
 /// The native (Slint) windows, compiled from ui-slint/app.slint by build.rs.

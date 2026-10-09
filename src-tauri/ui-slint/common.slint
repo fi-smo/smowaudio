@@ -285,3 +285,102 @@ export component SpeakerIcon inherits Icon {
 export component HeadphonesIcon inherits Icon {
     commands: "M2.5 10V8a5.5 5.5 0 0 1 11 0v2 M3 9.5h1a1 1 0 0 1 1 1v2.5a1 1 0 0 1 -1 1h-1a1 1 0 0 1 -1 -1v-2.5a1 1 0 0 1 1 -1z M12 9.5h1a1 1 0 0 1 1 1v2.5a1 1 0 0 1 -1 1h-1a1 1 0 0 1 -1 -1v-2.5a1 1 0 0 1 1 -1z";
 }
+
+/// An on/off switch (36×20 track, 12px knob), optionally with a label after it.
+export component Switch inherits HorizontalLayout {
+    in-out property <bool> checked;
+    in property <string> text;
+    in property <string> label; // for screen readers when there's no text
+    in property <color> tint: Theme.mic;
+    callback toggled(bool);
+    spacing: 8px;
+    alignment: start;
+    track := Rectangle {
+        width: 36px;
+        height: 20px;
+        y: (parent.height - 20px) / 2;
+        border-radius: 10px;
+        background: root.checked ? root.tint : Theme.well;
+        border-width: Px.hair();
+        border-color: root.checked ? root.tint : Theme.line-strong;
+        Rectangle {
+            x: root.checked ? 19px : 3px;
+            y: (parent.height - 12px) / 2;
+            width: 12px;
+            height: 12px;
+            border-radius: 6px;
+            background: root.checked ? Theme.panel : Theme.muted;
+            animate x { duration: 150ms; }
+        }
+        animate background { duration: 150ms; }
+    }
+    if root.text != "": Text {
+        text: root.text;
+        color: Theme.muted;
+        font-size: 12px;
+        vertical-alignment: center;
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+    accessible-role: switch;
+    accessible-label: root.text != "" ? root.text : root.label;
+    accessible-checked: root.checked;
+    accessible-action-default => {
+        root.checked = !root.checked;
+        root.toggled(root.checked);
+    }
+}
+
+/// A row of options with one selected, like the old `.seg` buttons (EQ presets, tabs).
+export component Seg inherits Rectangle {
+    in property <[string]> options;
+    in property <string> current;
+    // Options that can't be picked (shown faded), e.g. "Custom" until the curve is edited.
+    in property <[string]> disabled;
+    in property <length> font-size: 13px;
+    callback picked(string);
+    height: row.preferred-height + 8px;
+    width: row.preferred-width + 8px;
+    background: Theme.well;
+    border-width: Px.hair();
+    border-color: Theme.line;
+    border-radius: 8px;
+    row := HorizontalLayout {
+        x: 4px;
+        y: 4px;
+        spacing: 2px;
+        for o in root.options: Rectangle {
+            property <bool> on: o == root.current;
+            property <bool> off: o != root.current && root.disabled.length > 0 && root.disabled[0] == o;
+            width: label.preferred-width + 20px;
+            height: label.preferred-height + 8px;
+            border-radius: 6px;
+            background: on ? Theme.panel : transparent;
+            drop-shadow-blur: on ? 2px : 0;
+            drop-shadow-offset-y: on ? 1px : 0;
+            drop-shadow-color: #0000001f;
+            label := Text {
+                text: o;
+                color: on ? Theme.text : Theme.muted;
+                opacity: off ? 0.55 : 1;
+                font-size: root.font-size;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            TouchArea {
+                enabled: !off;
+                mouse-cursor: off ? default : pointer;
+                clicked => { root.picked(o); }
+            }
+            accessible-role: button;
+            accessible-label: o;
+            accessible-checked: on;
+            accessible-action-default => { if !off { root.picked(o); } }
+        }
+    }
+}
