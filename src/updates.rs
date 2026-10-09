@@ -204,7 +204,7 @@ pub fn install(app: &AppHandle) -> Result<(), String> {
     let update = state.updates.pending.lock().clone().ok_or("Check for updates first")?;
     append_log(&format!("downloading update {}", update.version));
     let result = download(app, &update).and_then(|bytes| {
-        verify(&bytes, &update.signature, &update.version)?;
+        verify(PUBLIC_KEY, &bytes, &update.signature, &update.version)?;
         run_installer(&update.version, &bytes)
     });
     result.map_err(|e| {
@@ -247,7 +247,7 @@ fn download(app: &AppHandle, update: &Update) -> Result<Vec<u8>, String> {
 
 /// Checks the installer against the release key, and that it was signed as `version`: latest.json
 /// itself isn't signed, so this stops it pairing a new version number with an older installer.
-fn verify(bytes: &[u8], signature: &str, version: &str) -> Result<(), String> {
+fn verify(public_key: &str, bytes: &[u8], signature: &str, version: &str) -> Result<(), String> {
     let decode = |b64: &str| {
         base64::engine::general_purpose::STANDARD
             .decode(b64.trim())
@@ -255,7 +255,7 @@ fn verify(bytes: &[u8], signature: &str, version: &str) -> Result<(), String> {
             .and_then(|raw| String::from_utf8(raw).ok())
             .ok_or_else(|| "The update's signature is malformed.".to_string())
     };
-    let key = minisign_verify::PublicKey::decode(&decode(PUBLIC_KEY)?).map_err(|e| e.to_string())?;
+    let key = minisign_verify::PublicKey::decode(&decode(public_key)?).map_err(|e| e.to_string())?;
     let signature = minisign_verify::Signature::decode(&decode(signature)?).map_err(|_| "The update's signature is malformed.")?;
     key.verify(bytes, &signature, true).map_err(|_| "The downloaded update isn't signed by Smowaudio, so it wasn't installed.")?;
     // The trusted comment ("timestamp:…\tfile:…\tversion:0.9.4") is covered by the signature.
@@ -404,6 +404,37 @@ mod tests {
         assert_eq!(escape_nsis_arg("/x"), "\"/x\"");
         assert_eq!(escape_nsis_arg(r#"say "hi""#), r#""say \"hi\"""#);
         assert_eq!(escape_nsis_arg(r"C:\my dir\"), r#""C:\my dir\\""#);
+    }
+
+    /// Signs like examples/sign_update.rs, with a throwaway key.
+    fn sign(data: &[u8], version: &str) -> (String, String) {
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let pair = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let trusted = format!("timestamp:0	file:setup.exe	version:{version}");
+        let sig = minisign::sign(None, &pair.sk, std::io::Cursor::new(data), Some(&trusted), None).unwrap();
+        (b64.encode(pair.pk.to_box().unwrap().to_string()), b64.encode(sig.to_string()))
+    }
+
+    #[test]
+    fn signed_installers_verify_and_tampered_ones_dont() {
+        let (key, sig) = sign(b"installer", "0.10.0");
+        assert!(verify(&key, b"installer", &sig, "0.10.0").is_ok());
+        assert!(verify(&key, b"installer", &sig, "v0.10.0").is_ok());
+        assert!(verify(&key, b"tampered", &sig, "0.10.0").is_err());
+        // latest.json can't pass an older installer off as a newer version.
+        assert!(verify(&key, b"installer", &sig, "0.11.0").is_err());
+        let (other_key, _) = sign(b"x", "0.10.0");
+        assert!(verify(&other_key, b"installer", &sig, "0.10.0").is_err());
+    }
+
+    #[test]
+    #[ignore = "asks GitHub; run with --ignored"]
+    fn the_published_manifest_reads() {
+        let manifest = fetch_manifest().unwrap();
+        println!("latest: {}", manifest.version);
+        assert!(manifest.platforms.contains_key(PLATFORM));
+        assert!(newer(&manifest, &manifest.version).unwrap().is_none());
+        assert!(newer(&manifest, "0.0.1").unwrap().is_some());
     }
 
     #[test]

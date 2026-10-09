@@ -1,16 +1,17 @@
-# Releases the version in src-tauri/tauri.conf.json when it changes on main: builds a signed
-# installer, publishes it as GitHub Release vX.Y.Z (creating the tag) and writes latest.json to the
-# `updates` branch, which the app reads to offer the update. Pushes that don't change the version
-# stop after a few seconds.
+# Releases the version in Cargo.toml when it changes on main: builds a signed installer, publishes
+# it as GitHub Release vX.Y.Z (creating the tag) and writes latest.json to the `updates` branch,
+# which the app reads to offer the update. Pushes that don't change the version stop after a few
+# seconds.
 # Runs on main rather than on tags because GitHub only shares build caches within a branch (or
 # from main): tag builds each started from scratch (~22 min instead of a few).
-# Only the repo's own GITHUB_TOKEN is needed; the signing key is the TAURI_SIGNING_PRIVATE_KEY secret.
+# Only the repo's own GITHUB_TOKEN is needed; the signing key is the TAURI_SIGNING_PRIVATE_KEY secret
+# (named after the tool that first made it; the app checks installers against its public half).
 name: Release
 
 on:
   push:
     branches: [main]
-    paths: ["src-tauri/tauri.conf.json"]
+    paths: ["Cargo.toml"]
   workflow_dispatch:
 
 concurrency:
@@ -32,7 +33,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          # The [package] version: the first `version = "..."` line in Cargo.toml.
+          $version = ([regex]::Match((Get-Content Cargo.toml -Raw), '(?m)^version\s*=\s*"([^"]+)"')).Groups[1].Value
+          if (-not $version) { throw "No version in Cargo.toml" }
           "VERSION=$version" >> $env:GITHUB_ENV
           "TAG=v$version" >> $env:GITHUB_ENV
           gh release view "v$version" --repo $env:GITHUB_REPOSITORY *> $null
@@ -60,12 +63,6 @@ jobs:
         shell: pwsh
         run: Set-MpPreference -DisableRealtimeMonitoring $true
 
-      - uses: actions/setup-node@v5
-        if: steps.version.outputs.skip == 'false'
-        with:
-          node-version: 20
-          cache: npm
-
       - uses: dtolnay/rust-toolchain@stable
         if: steps.version.outputs.skip == 'false'
 
@@ -73,18 +70,32 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: steps.version.outputs.skip == 'false'
         with:
-          workspaces: src-tauri
           shared-key: release
 
-      - run: npm ci
+      - name: Build the app
         if: steps.version.outputs.skip == 'false'
+        run: cargo build --release
 
-      - name: Build the signed installer
+      - name: Build the installer
         if: steps.version.outputs.skip == 'false'
+        shell: pwsh
+        run: |
+          $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (-not (Test-Path $makensis)) {
+            choco install nsis -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw "Installing NSIS failed" }
+          }
+          & $makensis -V2 "-DVERSION=$env:VERSION" "-DOUTFILE=..\target\Smowaudio_${env:VERSION}_x64-setup.exe" installer/smowaudio.nsi
+          if ($LASTEXITCODE -ne 0) { throw "Building the installer failed" }
+
+      - name: Sign the installer
+        if: steps.version.outputs.skip == 'false'
+        shell: pwsh
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-        run: npx tauri build --config src-tauri/tauri.release.conf.json
+          SMOWAUDIO_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          cargo run --release --example sign_update -- "target/Smowaudio_${env:VERSION}_x64-setup.exe" $env:VERSION
+          if ($LASTEXITCODE -ne 0) { throw "Signing failed" }
 
       - name: Publish the release and the update manifest
         if: steps.version.outputs.skip == 'false'
@@ -94,7 +105,7 @@ jobs:
         run: |
           $repo = $env:GITHUB_REPOSITORY
           $tag = $env:TAG
-          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter "*_x64-setup.exe" | Select-Object -First 1
+          $setup = Get-Item "target/Smowaudio_${env:VERSION}_x64-setup.exe" -ErrorAction SilentlyContinue
           if (-not $setup) { throw "The installer wasn't built" }
           $signature = (Get-Content "$($setup.FullName).sig" -Raw).Trim()
 

@@ -33,6 +33,10 @@ base64 = "0.22"
 semver = "1"
 slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "accessibility", "unstable-winit-030"] }
 
+[dev-dependencies]
+# Signs release installers (examples/sign_update.rs) the way Tauri's CLI did.
+minisign = "0.7"
+
 [dependencies.windows]
 version = "0.62"
 features = [

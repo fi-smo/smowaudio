@@ -378,6 +378,18 @@ fn cycle_output(state: &AppState, direction: isize) -> Option<Osd> {
 #[cfg(test)]
 mod tests {
     use super::device_label;
+    use std::str::FromStr;
+
+    #[test]
+    fn recorded_combinations_parse() {
+        // What Settings records (see settingsui::key_pressed), and what older versions saved.
+        for keys in [
+            "Ctrl+Alt+KeyM", "Super+Digit1", "F13", "Shift+NumpadAdd", "AudioVolumeUp", "MediaPlayPause",
+            "Ctrl+Backquote", "Ctrl+Shift+ArrowUp", "Alt+PageDown", "Ctrl+Alt+Shift+Super+F24", "Pause",
+        ] {
+            assert!(global_hotkey::hotkey::HotKey::from_str(keys).is_ok(), "{keys}");
+        }
+    }
 
     #[test]
     fn device_label_shows_the_device_not_the_endpoint_type() {

@@ -459,6 +459,11 @@ fn main() {
         instance::hand_over();
         return;
     }
+    // The installer gives the Start menu shortcut this id; with it here too, a pinned shortcut and
+    // the open window share one taskbar button.
+    unsafe {
+        let _ = windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(windows::core::w!("dev.fi-smo.smowaudio"));
+    }
 
     // Audio first: the engine is running before any window exists.
     let config = {
