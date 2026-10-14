@@ -3,6 +3,11 @@
 Every release needs a section here: the release build takes its notes from it, and the app shows
 them under Settings → Updates.
 
+## 0.10.1 — 2026-10-14
+- The volume overlay no longer leaves an invisible window in the top-right corner that blocks clicks there
+- A mic that comes back from power saving but stays silent is reopened by itself, instead of needing to be unplugged
+- Dragging the window back from the edge of the screen no longer leaves part of it white, and it opens fully on screen
+
 ## 0.10.0 — 2026-10-09
 - Smowaudio no longer needs a browser engine (WebView2): every window, from the mixer to the tray flyout, is drawn natively
 - The tray flyout reacts to the scroll wheel as soon as it opens, and stays sharp at 125 % and 150 % display scaling
