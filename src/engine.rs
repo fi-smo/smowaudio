@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -52,6 +53,12 @@ pub struct MicTestStatus {
 
 /// Length of a mic test recording.
 const MIC_TEST_SAMPLES: usize = 5 * 48_000;
+/// A mic stream that sends no packets this long is stuck, and is reopened.
+const MIC_NO_PACKETS_LIMIT: Duration = Duration::from_secs(3);
+/// Only exact zeros this long (a working mic always has some noise) also reopens it, then less
+/// often while it stays that way.
+const MIC_ZEROS_LIMIT: Duration = Duration::from_secs(10);
+const MIC_ZEROS_LIMIT_MAX: Duration = Duration::from_secs(60);
 
 #[derive(Default, PartialEq)]
 enum MicTestPhase {
@@ -500,6 +507,13 @@ impl Engine {
             /// The frame before the filters, kept for the mic test.
             raw: [f32; FRAME],
             filled: usize,
+            /// The reopen generation the stream was last opened for (u64::MAX before the first).
+            opened_for: u64,
+            /// How long only exact zeros may arrive before the stream is reopened; doubles while
+            /// that keeps happening.
+            zeros_limit: Duration,
+            /// Why the mic was last reopened, so a repeating reason is logged once.
+            last_reopen: &'static str,
         }
 
         let settings = config.mic.clone();
@@ -509,19 +523,67 @@ impl Engine {
                 Ok(d) => chain.attach_denoiser(d),
                 Err(e) => log::error!("noise removal unavailable: {e:#}"),
             }
-            MicState { chain, seen: u64::MAX, frame: [0.0; FRAME], raw: [0.0; FRAME], filled: 0 }
+            MicState {
+                chain,
+                seen: u64::MAX,
+                frame: [0.0; FRAME],
+                raw: [0.0; FRAME],
+                filled: 0,
+                opened_for: u64::MAX,
+                zeros_limit: MIC_ZEROS_LIMIT,
+                last_reopen: "",
+            }
         };
 
         let shared = self.shared.clone();
         let mic_id = config.mic_device.clone();
         let preferred_mic = config.previous_default(Flow::Capture);
         self.supervise_with("Microphone", init, move |st, stop| {
-            stream::phase("find device");
             let generation = shared.mic_generation.load(Ordering::Relaxed);
+            // A mic that just came back (a USB receiver waking from power saving) can need a moment
+            // before it delivers audio: opened the instant Windows lists it, the stream may stay
+            // silent until the device is plugged in again.
+            if st.opened_for != u64::MAX && st.opened_for != generation {
+                stream::phase("letting the mic settle");
+                for _ in 0..15 {
+                    if stop.load(Ordering::Relaxed) || shared.mic_generation.load(Ordering::Relaxed) != generation {
+                        return Ok(());
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+            st.opened_for = generation;
+            stream::phase("find device");
             let device = device::resolve_physical(Flow::Capture, mic_id.as_deref(), preferred_mic.as_deref())?;
-            let keep_going =
-                || !stop.load(Ordering::Relaxed) && shared.mic_generation.load(Ordering::Relaxed) == generation;
+            let name = device::friendly_name(&device).unwrap_or_default();
+            crate::append_log(&format!("Microphone recording from {name}"));
+
+            // A working mic sends packets all the time, and never pure digital silence (there's
+            // always some noise). A stream that does either is stuck: reopen it.
+            let opened = Instant::now();
+            let (last_packet, last_sound) = (Cell::new(opened), Cell::new(opened));
+            let reopen_because: Cell<Option<&'static str>> = Cell::new(None);
+            let zeros_limit = st.zeros_limit;
+            let keep_going = || {
+                if stop.load(Ordering::Relaxed) || shared.mic_generation.load(Ordering::Relaxed) != generation {
+                    return false;
+                }
+                if last_packet.get().elapsed() > MIC_NO_PACKETS_LIMIT {
+                    reopen_because.set(Some("sent no audio for 3 s"));
+                    return false;
+                }
+                if last_sound.get().elapsed() > zeros_limit {
+                    reopen_because.set(Some("sent only digital silence"));
+                    return false;
+                }
+                true
+            };
             stream::run_capture_while(&device, 1, keep_going, |samples, glitch| {
+                let now = Instant::now();
+                last_packet.set(now);
+                if samples.iter().any(|s| *s != 0.0) {
+                    last_sound.set(now);
+                }
                 if glitch {
                     mic_stats.record_glitch();
                 }
@@ -587,7 +649,24 @@ impl Engine {
                         m.mic = st.chain.meters;
                     }
                 }
-            })
+            })?;
+            let heard = last_sound.get() > opened;
+            match reopen_because.get() {
+                Some(reason) => {
+                    if reason != st.last_reopen {
+                        crate::append_log(&format!("Microphone {reason}; reopening it"));
+                    }
+                    st.last_reopen = reason;
+                    // A mic that's really silent (a receiver whose transmitter is off) shouldn't
+                    // be reopened every few seconds: wait longer each time, up to a minute.
+                    st.zeros_limit = if heard { MIC_ZEROS_LIMIT } else { (st.zeros_limit * 2).min(MIC_ZEROS_LIMIT_MAX) };
+                }
+                None => {
+                    st.last_reopen = "";
+                    st.zeros_limit = MIC_ZEROS_LIMIT;
+                }
+            }
+            Ok(())
         });
 
         // A VB-Cable fed while nobody records it queues ~75 ms of audio, and that delay sticks once

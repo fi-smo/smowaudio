@@ -93,6 +93,7 @@ pub fn run(app: AppHandle, ready: impl FnOnce() + 'static) -> Result<(), slint::
         .select()?;
 
     crate::flyout::create(&app)?;
+    crate::osd::prepare();
     create_tray(app);
     // Runs as the loop starts, so anything it opens has a running loop behind it.
     slint::Timer::single_shot(Duration::ZERO, ready);

@@ -11,7 +11,8 @@ use crate::app::AppHandle;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WS_EX_NOACTIVATE,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WS_EX_APPWINDOW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
 };
 
 use crate::app::{create_window, hwnd_of, work_area_at_cursor, WindowKind};
@@ -45,15 +46,75 @@ pub struct Osd {
 
 struct Overlay {
     window: OsdWindow,
+    /// The native window, once it exists (Slint creates it a moment after the first show).
     hwnd: Option<isize>,
-    /// On screen right now (the window is shown and hidden behind Slint's back).
+    /// On screen right now. Once set up, the window is shown and hidden with Win32 directly,
+    /// behind Slint's back, so it never takes focus.
     up: bool,
     fade: slint::Timer,
     hide: slint::Timer,
+    setup: slint::Timer,
 }
 
 thread_local! {
     static OVERLAY: RefCell<Option<Overlay>> = const { RefCell::new(None) };
+}
+
+/// Creates the overlay hidden, at start: shown once off-screen so Slint creates the native
+/// window, then made click-through and focus-free and hidden, before any shortcut needs it. Call
+/// on the main thread once the event loop runs.
+pub fn prepare() {
+    let window = match create_window(WindowKind::Overlay, OsdWindow::new) {
+        Ok(window) => window,
+        Err(e) => {
+            crate::append_log(&format!("overlay window failed: {e}"));
+            return;
+        }
+    };
+    window.window().set_position(PhysicalPosition::new(-32000, -32000));
+    if let Err(e) = window.show() {
+        crate::append_log(&format!("overlay window failed: {e}"));
+        return;
+    }
+    let setup = slint::Timer::default();
+    setup.start(slint::TimerMode::Repeated, Duration::from_millis(16), finish_setup);
+    OVERLAY.with(|o| *o.borrow_mut() = Some(Overlay { window, hwnd: None, up: false, fade: Default::default(), hide: Default::default(), setup }));
+}
+
+/// Once the native window exists: make it click-through and focus-free, and hide it.
+fn finish_setup() {
+    OVERLAY.with(|o| {
+        let mut o = o.borrow_mut();
+        let Some(o) = o.as_mut() else { return };
+        let hwnd = o.window.window().with_winit_window(|win: &winit::window::Window| {
+            // Clicks go through to whatever is underneath.
+            let _ = win.set_cursor_hittest(false);
+            hwnd_of(win)
+        });
+        let Some(Some(hwnd)) = hwnd else { return };
+        o.setup.stop();
+        o.hwnd = Some(hwnd);
+        enforce_styles(hwnd);
+        if !o.up {
+            unsafe {
+                let _ = ShowWindow(HWND(hwnd as *mut _), SW_HIDE);
+            }
+        }
+    });
+}
+
+/// Never activated, never in Alt+Tab, and clicks pass through. Applied again before every show,
+/// as winit rewrites the extended style whenever it changes one of its own window flags.
+fn enforce_styles(hwnd: isize) {
+    unsafe {
+        let hwnd = HWND(hwnd as *mut _);
+        let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let wanted = (style | (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT | WS_EX_LAYERED).0 as isize)
+            & !(WS_EX_APPWINDOW.0 as isize);
+        if wanted != style {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, wanted);
+        }
+    }
 }
 
 /// Shows the overlay and hides it again shortly after. Call from any thread; a held volume
@@ -65,24 +126,10 @@ pub fn show(_app: &AppHandle, osd: Osd) {
 fn show_now(osd: Osd) {
     OVERLAY.with(|o| {
         let mut o = o.borrow_mut();
-        if o.is_none() {
-            match create_window(WindowKind::Overlay, OsdWindow::new) {
-                Ok(window) => {
-                    *o = Some(Overlay {
-                        window,
-                        hwnd: None,
-                        up: false,
-                        fade: slint::Timer::default(),
-                        hide: slint::Timer::default(),
-                    })
-                }
-                Err(e) => {
-                    crate::append_log(&format!("overlay window failed: {e}"));
-                    return;
-                }
-            }
-        }
+        // Not set up yet (only in the first moment after start): skip rather than show a window
+        // that would take clicks.
         let Some(o) = o.as_mut() else { return };
+        let Some(hwnd) = o.hwnd else { return };
         let w = &o.window;
         w.global::<Theme>().set_dark(!crate::apps_use_light_theme());
         w.set_group(osd.group.into());
@@ -100,34 +147,11 @@ fn show_now(osd: Osd) {
                 let y = top + (MARGIN * scale).round() as i32;
                 w.window().set_position(PhysicalPosition::new(x, y));
             }
-            match o.hwnd {
-                // Never activated: the game or app in front keeps focus.
-                Some(hwnd) => unsafe {
-                    let hwnd = HWND(hwnd as *mut _);
-                    let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-                    let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-                },
-                None => {
-                    // The first show doesn't activate it (see the window attributes); after
-                    // that it's shown with Win32 directly, which Slint doesn't need to know.
-                    if let Err(e) = w.show() {
-                        crate::append_log(&format!("overlay didn't open: {e}"));
-                        return;
-                    }
-                    o.hwnd = w.window().with_winit_window(|win: &winit::window::Window| {
-                        // Clicks go through to whatever is underneath.
-                        let _ = win.set_cursor_hittest(false);
-                        hwnd_of(win)
-                    })
-                    .flatten();
-                    if let Some(hwnd) = o.hwnd {
-                        unsafe {
-                            let hwnd = HWND(hwnd as *mut _);
-                            let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-                            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE.0 as isize);
-                        }
-                    }
-                }
+            enforce_styles(hwnd);
+            unsafe {
+                let hwnd = HWND(hwnd as *mut _);
+                let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
             }
             o.up = true;
         }
