@@ -46,6 +46,8 @@ struct Main {
     stuck_since: std::collections::HashMap<String, Instant>,
     /// The Mic view's chain tabs.
     chain: Rc<VecModel<ChainTab>>,
+    /// Placed on screen yet (the first time it opens, it's centred on the screen in use).
+    placed: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -116,6 +118,7 @@ fn create(app: &AppHandle) -> Result<(), slint::PlatformError> {
             app_meters: Default::default(),
             stuck_since: Default::default(),
             chain: Rc::new(VecModel::default()),
+            placed: false,
         })
     });
     MAIN.with(|m| {
@@ -146,8 +149,12 @@ fn create(app: &AppHandle) -> Result<(), slint::PlatformError> {
 fn show(app: &AppHandle) {
     refresh(app);
     MAIN.with(|m| {
-        let m = m.borrow();
-        let Some(m) = m.as_ref() else { return };
+        let mut m = m.borrow_mut();
+        let Some(m) = m.as_mut() else { return };
+        if !m.placed {
+            m.placed = true;
+            place(&m.window);
+        }
         m.window.global::<Theme>().set_dark(!crate::apps_use_light_theme());
         let window = m.window.window();
         if window.is_minimized() {
@@ -165,6 +172,38 @@ fn show(app: &AppHandle) {
         let handle = app.clone();
         m.refresh_timer.start(slint::TimerMode::Repeated, REFRESH_EVERY, move || refresh_if_visible(&handle));
     });
+}
+
+/// Centres the window on the screen the mouse is on, shrunk to fit if that screen is small, so it
+/// never opens partly off screen.
+fn place(window: &MainWindow) {
+    let Some(((left, top, right, bottom), scale)) = crate::app::work_area_at_cursor() else { return };
+    let (area_w, area_h) = ((right - left) as f64, (bottom - top) as f64);
+    let width = (1180.0 * scale).min(area_w - 32.0 * scale).max(440.0 * scale);
+    let height = (760.0 * scale).min(area_h - 32.0 * scale).max(520.0 * scale);
+    window.window().set_size(slint::PhysicalSize::new(width as u32, height as u32));
+    let x = left as f64 + ((area_w - width) / 2.0).max(0.0);
+    let y = top as f64 + ((area_h - height) / 2.0).max(0.0);
+    window.window().set_position(slint::PhysicalPosition::new(x as i32, y as i32));
+}
+
+/// The main window from window events. Windows can deliver those while the window is being shown
+/// or moved from inside a `MAIN` borrow, so this skips rather than panics then.
+fn window_from_event() -> Option<MainWindow> {
+    MAIN.with(|m| m.try_borrow().ok().and_then(|m| m.as_ref().map(|m| m.window.clone_strong())))
+}
+
+/// Whether a winit window is the main window.
+pub fn is_window(id: slint::winit_030::winit::window::WindowId) -> bool {
+    use slint::winit_030::{winit, WinitWindowAccessor};
+    window_from_event().and_then(|w| w.window().with_winit_window(|win: &winit::window::Window| win.id())) == Some(id)
+}
+
+/// Repaints the whole window: it moved, and parts that were off screen would otherwise stay blank.
+pub fn repaint_all() {
+    if let Some(w) = window_from_event() {
+        w.set_repaint(!w.get_repaint());
+    }
 }
 
 /// The window was closed: stop the timers and give shortcuts back if one was being recorded.

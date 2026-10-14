@@ -253,6 +253,7 @@ impl CustomApplicationHandler for WindowEvents {
                 crate::flyout::hide();
                 *self.app.state().flyout_hidden_at.lock() = Some(Instant::now());
             }
+            WindowEvent::Moved(_) if crate::mainwin::is_window(window_id) => crate::mainwin::repaint_all(),
             WindowEvent::ModifiersChanged(m) => {
                 self.mods = m.state();
                 if crate::settingsui::is_recording() {

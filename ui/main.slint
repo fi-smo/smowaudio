@@ -207,6 +207,8 @@ export component MainWindow inherits Window {
     callback buffer-clicked;
     callback status-clicked;
     callback update-clicked;
+    // Flipped to repaint the whole window (see the layer below).
+    in property <bool> repaint;
 
     title: "Smowaudio";
     min-width: 440px;
@@ -221,6 +223,11 @@ export component MainWindow inherits Window {
         root.view = v;
         root.view-changed(v);
     }
+
+    // An invisible full-window layer. The software renderer only redraws what changed, so parts of
+    // the window that were off screen come back blank; flipping its (practically transparent)
+    // colour makes it redraw everything.
+    Rectangle { background: root.repaint ? #00000001 : #00000000; }
 
     HorizontalLayout {
         // Rail.
