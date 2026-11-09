@@ -225,8 +225,8 @@ export component MainWindow inherits Window {
     }
 
     // An invisible full-window layer. The software renderer only redraws what changed, so parts of
-    // the window that were off screen come back blank; flipping its (practically transparent)
-    // colour makes it redraw everything.
+    // the window that were off screen, or everything when it was closed and opened again, come back
+    // blank; flipping its (practically transparent) colour makes it redraw everything.
     Rectangle { background: root.repaint ? #00000001 : #00000000; }
 
     HorizontalLayout {

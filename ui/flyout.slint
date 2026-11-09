@@ -107,6 +107,8 @@ export component FlyoutWindow inherits Window {
     in property <bool> mic-muted;
     in property <bool> mic-listen;
     in-out property <bool> outputs-open;
+    // Flipped to repaint the whole window (see the layer below).
+    in property <bool> repaint;
     // The window's height in logical pixels, for placing it before it appears.
     out property <float> wanted-height: content.preferred-height / 1px;
 
@@ -137,6 +139,12 @@ export component FlyoutWindow inherits Window {
             reject
         }
     }
+
+    // An invisible full-window layer. The software renderer only redraws what changed, but a
+    // window that was hidden comes back empty, so whatever didn't change since (the mic buttons,
+    // the footer) would stay blank; flipping its (practically transparent) colour before each
+    // show makes it draw everything.
+    Rectangle { background: root.repaint ? #00000001 : #00000000; }
 
     // The window itself is rounded by Windows; this is its 1px border.
     Rectangle {

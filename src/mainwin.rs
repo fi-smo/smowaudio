@@ -160,6 +160,8 @@ fn show(app: &AppHandle) {
         if window.is_minimized() {
             window.set_minimized(false);
         }
+        // A closed window comes back empty, and the renderer would only draw what changed since.
+        m.window.set_repaint(!m.window.get_repaint());
         if let Err(e) = m.window.show() {
             crate::append_log(&format!("main window didn't open: {e}"));
             return;

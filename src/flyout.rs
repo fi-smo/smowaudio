@@ -192,6 +192,8 @@ fn show(app: &AppHandle, anchor: Anchor) {
         let Some(f) = f.as_mut() else { return };
         f.window.global::<Theme>().set_dark(!crate::apps_use_light_theme());
         f.window.global::<Px>().set_scale(anchor.scale as f32);
+        // It comes back empty, and the renderer would only draw what changed since it was hidden.
+        f.window.set_repaint(!f.window.get_repaint());
         // Place it from its layout's size before it appears, then again from the window's real
         // size: the first show lays out the rows just filled in, so only then is the height final.
         let estimate = (WIDTH as f64 * anchor.scale, f.window.get_wanted_height() as f64 * anchor.scale);
