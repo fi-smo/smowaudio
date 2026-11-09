@@ -3,6 +3,9 @@
 Every release needs a section here: the release build takes its notes from it, and the app shows
 them under Settings → Updates.
 
+## 0.10.2 — 2026-11-09
+- The tray flyout no longer sometimes opens with its bottom part (mic buttons, Open mixer) blank, and neither does the main window when you open it again
+
 ## 0.10.1 — 2026-10-14
 - The volume overlay no longer leaves an invisible window in the top-right corner that blocks clicks there
 - A mic that comes back from power saving but stays silent is reopened by itself, instead of needing to be unplugged
