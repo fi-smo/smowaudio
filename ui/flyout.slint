@@ -19,15 +19,20 @@ export struct Device {
     selected: bool,
 }
 
-/// One channel (or Master): label, fader over its meter, percentage, mute.
+/// One channel (or Master, or the output device's own volume): label, fader over its meter,
+/// percentage, mute.
 component ChannelRow inherits Rectangle {
     in property <Row> data;
     in property <int> index;
     in property <bool> divider;
     in property <bool> strong-divider;
+    // The device row: 0..100 % and no meter.
+    in property <float> top: 1.5;
+    in property <bool> has-meter: true;
+    in property <color> c: Theme.row-color(index);
+    in property <string> spoken-name: data.name;
     callback volume(float);
     callback mute;
-    property <color> c: Theme.row-color(index);
     height: 41px;
     // Divider above every row but the first; Master's is stronger.
     if divider: Rectangle {
@@ -51,16 +56,17 @@ component ChannelRow inherits Rectangle {
     }
     fader := HFader {
         x: fader-x;
-        y: 9px;
+        y: has-meter ? 9px : (parent.height - self.height) / 2;
         width: fader-w;
-        label: data.name;
+        label: root.spoken-name;
         value: data.volume;
+        top: root.top;
         tint: c;
         opacity: data.muted ? 0.4 : 1;
         changed(v) => { root.volume(v); }
     }
     // The meter lines up with the groove, which is inset by half the cap.
-    HMeter {
+    if has-meter: HMeter {
         x: fader-x + 6px;
         y: 9px + 18px + 2px;
         width: fader-w - 12px;
@@ -83,7 +89,7 @@ component ChannelRow inherits Rectangle {
         width: 28px;
         height: 24px;
         on: data.muted;
-        label: (data.muted ? "Unmute " : "Mute ") + data.name;
+        label: (data.muted ? "Unmute " : "Mute ") + root.spoken-name;
         clicked => { root.mute(); }
         SpeakerIcon {
             width: parent.width;
@@ -106,6 +112,11 @@ export component FlyoutWindow inherits Window {
     in property <float> mic-level;
     in property <bool> mic-muted;
     in property <bool> mic-listen;
+    // The output device's own volume (a Bluetooth speaker's), when there's a device playing.
+    in property <bool> device-shown;
+    in property <float> device-volume; // 0..1
+    in property <bool> device-muted;
+    in property <string> device-name;
     in-out property <bool> outputs-open;
     // Flipped to repaint the whole window (see the layer below).
     in property <bool> repaint;
@@ -114,6 +125,8 @@ export component FlyoutWindow inherits Window {
 
     callback set-volume(int, float);
     callback toggle-mute(int);
+    callback set-device-volume(float);
+    callback toggle-device-mute;
     callback choose-output(string);
     callback toggle-mic-mute;
     callback toggle-mic-listen;
@@ -293,6 +306,18 @@ export component FlyoutWindow inherits Window {
                     strong-divider: i == 4;
                     volume(v) => { root.set-volume(i, v); }
                     mute => { root.toggle-mute(i); }
+                }
+                // The device's own volume, after Master: what the speaker itself plays at.
+                if root.device-shown: ChannelRow {
+                    data: { name: "Device", volume: root.device-volume, muted: root.device-muted, level: 0, peak: 0 };
+                    index: 5;
+                    divider: true;
+                    top: 1;
+                    has-meter: false;
+                    c: Theme.focus;
+                    spoken-name: root.device-name + " (device)";
+                    volume(v) => { root.set-device-volume(v); }
+                    mute => { root.toggle-device-mute(); }
                 }
             }
         }

@@ -48,6 +48,8 @@ struct Main {
     chain: Rc<VecModel<ChainTab>>,
     /// Placed on screen yet (the first time it opens, it's centred on the screen in use).
     placed: bool,
+    /// Meter timer ticks, for reading the device volume less often.
+    ticks: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -119,6 +121,7 @@ fn create(app: &AppHandle) -> Result<(), slint::PlatformError> {
             stuck_since: Default::default(),
             chain: Rc::new(VecModel::default()),
             placed: false,
+            ticks: 0,
         })
     });
     MAIN.with(|m| {
@@ -221,6 +224,24 @@ fn closed(app: &AppHandle) {
 }
 
 fn wire_callbacks(window: &MainWindow, app: &AppHandle) {
+    let handle = app.clone();
+    window.on_device_volume_changed(move |volume| {
+        if let Some((id, _)) = handle.state().device_volume() {
+            if let Err(e) = audio::endpoint::set_volume(&id, volume) {
+                crate::append_log(&format!("device volume: {e:#}"));
+            }
+        }
+        refresh_device(&handle);
+    });
+    let handle = app.clone();
+    window.on_device_mute(move || {
+        if let Some((id, v)) = handle.state().device_volume() {
+            if let Err(e) = audio::endpoint::set_muted(&id, !v.muted) {
+                crate::append_log(&format!("device mute: {e:#}"));
+            }
+        }
+        refresh_device(&handle);
+    });
     let handle = app.clone();
     window.on_strip_volume(move |strip, volume| {
         let state = handle.state();
@@ -637,6 +658,8 @@ fn refresh(app: &AppHandle) {
 
         // Top bar.
         w.set_output_name(output.into());
+        let handle = *app;
+        slint::Timer::single_shot(Duration::ZERO, move || refresh_device(&handle));
         let failing = status
             .iter()
             .filter(|(k, v)| v.as_str() != "running" && !(k.as_str() == "Microphone" && device_missing(v)))
@@ -1017,8 +1040,37 @@ fn wire_mic(window: &MainWindow, app: &AppHandle) {
     window.on_mic_eq_widen(move |i, narrower| edit_mic(&handle, |mic| crate::eqedit::widen(&mut mic.eq, i as usize, narrower)));
 }
 
-/// Meters at 20 fps: each strip's two sides with the mixer's peak hold, Buffer and Limit.
+/// The Mixer's device bar: the playing device's own volume, which the speaker's buttons (or
+/// Windows) can change at any time, so the meter timer reads it again every few ticks.
+fn refresh_device(app: &AppHandle) {
+    let state = app.state();
+    let device = state.device_volume();
+    let name = device.as_ref().and(state.playing_output_name.lock().clone()).map(|n| short_name(&n)).unwrap_or_default();
+    MAIN.with(|m| {
+        let m = m.borrow();
+        let Some(m) = m.as_ref() else { return };
+        let w = &m.window;
+        w.set_device_shown(device.is_some());
+        if let Some((_, v)) = device {
+            w.set_device_volume(v.volume);
+            w.set_device_muted(v.muted);
+        }
+        w.set_device_name(name.into());
+    });
+}
+
+/// Meters at 20 fps: each strip's two sides with the mixer's peak hold, Buffer and Limit. Every
+/// sixth tick the device volume too, while the Mixer is on screen.
 fn update_meters(app: &AppHandle) {
+    let tick = MAIN.with(|m| {
+        m.borrow_mut().as_mut().map_or(1, |m| {
+            m.ticks = m.ticks.wrapping_add(1);
+            if m.window.get_view() == "mixer" { m.ticks } else { 1 }
+        })
+    });
+    if tick % 6 == 0 {
+        refresh_device(app);
+    }
     let state = app.state();
     let Some(meters) = state.engine.lock().as_ref().map(|e| e.meters()) else { return };
     // The engine reports 0 dB for a mic that isn't running; show it empty.

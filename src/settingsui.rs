@@ -692,6 +692,16 @@ fn shortcut_groups() -> Vec<(&'static str, &'static str, i32, Vec<(String, &'sta
             ],
         ),
         ("master", "Master", 4, channel("master")),
+        (
+            "device",
+            "Device (the speaker's own volume)",
+            -1,
+            vec![
+                ("device.volume_up".to_string(), "Volume up"),
+                ("device.volume_down".to_string(), "Volume down"),
+                ("device.mute".to_string(), "Mute on/off"),
+            ],
+        ),
     ];
     for (i, name) in CHANNEL_NAMES.iter().enumerate() {
         let id: &'static str = match i {

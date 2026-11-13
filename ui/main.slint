@@ -124,6 +124,13 @@ export component MainWindow inherits Window {
     in property <StripData> master;
     in property <StripData> mic;
     in property <string> buffer: "–";
+    // The output device's own volume (a Bluetooth speaker's).
+    in property <bool> device-shown;
+    in property <string> device-name;
+    in property <float> device-volume;
+    in property <bool> device-muted;
+    callback device-volume-changed(float);
+    callback device-mute;
     in property <int> eq-open: -1;
     in property <EqData> eq;
     in-out property <int> eq-selected: -1;
@@ -348,6 +355,12 @@ export component MainWindow inherits Window {
                         master: root.master;
                         mic: root.mic;
                         buffer: root.buffer;
+                        device-shown: root.device-shown;
+                        device-name: root.device-name;
+                        device-volume: root.device-volume;
+                        device-muted: root.device-muted;
+                        device-volume-changed(v) => { root.device-volume-changed(v); }
+                        device-mute => { root.device-mute(); }
                         volume(i, v) => { root.strip-volume(i, v); }
                         mute(i) => { root.strip-mute(i); }
                         feature(i) => { root.strip-feature(i); }

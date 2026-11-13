@@ -1,7 +1,7 @@
 // The Mixer view: four channel strips into Master, and the Mic strip, each with a dB scale, two
 // dotted meters, a fader, a readout and a mute + feature button.
 
-import { Theme, Px, Icon, Tape, Btn, SpeakerIcon, Glyph, Glyphs } from "common.slint";
+import { Theme, Px, Icon, Tape, Btn, SpeakerIcon, Glyph, Glyphs, HFader } from "common.slint";
 import { EqEditor, EqData } from "eq.slint";
 
 /// An app on a strip or a card: its own icon, or its first letter until there is one.
@@ -397,6 +397,75 @@ export component Strip inherits Rectangle {
     }
 }
 
+/// The output device's own volume, under the strips: on a Bluetooth speaker this turns the
+/// speaker itself up or down, like its buttons.
+component DeviceBar inherits Rectangle {
+    in property <string> name;
+    in property <float> volume; // 0..1
+    in property <bool> muted;
+    callback changed(float);
+    callback mute;
+    height: 36px;
+    background: Theme.panel;
+    border-width: Px.hair();
+    border-color: Theme.line;
+    border-radius: 8px;
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 6px;
+        spacing: 10px;
+        Tape {
+            y: (parent.height - self.height) / 2;
+            label: "Device";
+            tint: Theme.focus;
+            opacity: root.muted ? 0.45 : 1;
+        }
+        Text {
+            text: root.name;
+            color: Theme.faint;
+            font-size: 12px;
+            vertical-alignment: center;
+            overflow: elide;
+            min-width: 60px;
+            max-width: 220px;
+        }
+        fader := HFader {
+            y: (parent.height - self.height) / 2;
+            horizontal-stretch: 1;
+            label: root.name + " (device)";
+            value: root.volume;
+            top: 1;
+            tint: Theme.focus;
+            opacity: root.muted ? 0.45 : 1;
+            changed(v) => { root.changed(v); }
+        }
+        Text {
+            width: 52px;
+            text: root.muted ? "Muted" : round(fader.shown * 100) + " %";
+            color: root.muted ? Theme.hot : Theme.text;
+            font-family: Theme.font-num;
+            font-size: 13px;
+            font-weight: 500;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+        Btn {
+            width: 28px;
+            height: 24px;
+            y: Px.align((parent.height - 24px) / 2, parent.absolute-position.y);
+            on: root.muted;
+            label: (root.muted ? "Unmute " : "Mute ") + root.name;
+            clicked => { root.mute(); }
+            SpeakerIcon {
+                width: parent.width;
+                height: parent.height;
+                off: root.muted;
+                tint: parent.ink;
+            }
+        }
+    }
+}
+
 /// "Playback" and similar small caps labels above a group of strips.
 component GroupLabel inherits HorizontalLayout {
     in property <string> title;
@@ -427,12 +496,21 @@ export component MixerView inherits VerticalLayout {
     in property <StripData> master;
     in property <StripData> mic;
     in property <string> buffer: "–";
+    // The output device's own volume, shown under the strips while a device plays.
+    in property <bool> device-shown;
+    in property <string> device-name;
+    in property <float> device-volume; // 0..1
+    in property <bool> device-muted;
+    callback device-volume-changed(float);
+    callback device-mute;
     // The scroll area's height: faders shrink from 190 down to 140px so the Mixer, with the EQ
     // drawer open, fits without scrolling (like the old page's fitMixer).
     in property <length> available-height: 10000px;
     property <length> drawer-h: root.eq-open >= 0 ? drawer.height + 16px : 0;
+    // The device bar and the gap above it.
+    property <length> device-h: root.device-shown ? 36px + 8px : 0;
     // Everything but the faders: title (66), group label (24), a strip without its fader (154).
-    property <length> fader-height: max(140px, min(190px, root.available-height - 66px - 24px - 154px - drawer-h - 8px));
+    property <length> fader-height: max(140px, min(190px, root.available-height - 66px - 24px - 154px - device-h - drawer-h - 8px));
     // Strip indices: 0..3 channels, 4 Master, 5 Mic.
     callback volume(int, float);
     callback mute(int);
@@ -536,6 +614,13 @@ export component MixerView inherits VerticalLayout {
                     mute => { root.mute(4); }
                     feature => { root.feature(4); }
                 }
+            }
+            if root.device-shown: DeviceBar {
+                name: root.device-name;
+                volume: root.device-volume;
+                muted: root.device-muted;
+                changed(v) => { root.device-volume-changed(v); }
+                mute => { root.device-mute(); }
             }
         }
         // Your voice: a divider, then the Mic strip.

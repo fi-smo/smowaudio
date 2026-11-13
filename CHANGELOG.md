@@ -3,6 +3,10 @@
 Every release needs a section here: the release build takes its notes from it, and the app shows
 them under Settings → Updates.
 
+## 0.10.3 — 2026-11-13
+- Turn your speaker or headphones themselves up and down from Smowaudio: a new Device slider in the tray flyout and under the mixer's strips sets the output device's own volume, which on a Bluetooth speaker is the volume its own buttons change
+- New shortcuts for it (Settings → Shortcuts → Device): volume up, volume down and mute, with the on-screen overlay
+
 ## 0.10.2 — 2026-11-09
 - The tray flyout no longer sometimes opens with its bottom part (mic buttons, Open mixer) blank, and neither does the main window when you open it again
 

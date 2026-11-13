@@ -26,6 +26,9 @@ fn main() {
         device("a", "soundcore Select 4 Go", false),
         device("b", "Arctis Nova Pro Wireless", false),
     ])).into());
+    window.set_device_shown(true);
+    window.set_device_volume(0.5);
+    window.set_device_name("soundcore Select 4 Go".into());
     window.set_output_label("Automatic".into());
     window.set_status_text("All running".into());
     window.set_mic_text("Off · not connected".into());

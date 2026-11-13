@@ -158,12 +158,14 @@ export component HMeter inherits Rectangle {
 }
 
 /// Horizontal fader: same groove, colour fill, unity mark and cap as the mixer's. Drag, click,
-/// scroll or use the arrow keys; double-click resets to 100 %.
+/// scroll or use the arrow keys; double-click resets to 100 %. With `top` at 1 (a device's own
+/// volume) there's no unity mark, no snapping and no reset: 100 % there is simply the loudest.
 export component HFader inherits Rectangle {
-    in property <float> value; // 0..1.5, from the app
+    in property <float> value; // 0..top, from the app
     in property <color> tint;
     callback changed(float);
-    property <float> top: 1.5;
+    in property <float> top: 1.5;
+    property <bool> has-unity: top > 1;
     property <length> ax: self.absolute-position.x;
     property <length> ay: self.absolute-position.y;
     // Edges of the groove and fill (4px tall, centred), and of the cap (18px tall).
@@ -180,7 +182,7 @@ export component HFader inherits Rectangle {
     accessible-label: label + " volume";
     accessible-value: round(shown * 100);
     accessible-value-minimum: 0;
-    accessible-value-maximum: 150;
+    accessible-value-maximum: top * 100;
     accessible-value-step: 2;
     accessible-action-increment => { set(value + 0.02); }
     accessible-action-decrement => { set(value - 0.02); }
@@ -195,7 +197,7 @@ export component HFader inherits Rectangle {
     // Dragging snaps to unity, like the mixer, so it's easy to land on 100 %.
     function from-x(x: length) {
         let v = max(0, min(1, (x - inset - 3px) / (track - 6px))) * root.top;
-        set(abs(v - 1) < 0.03 ? 1 : v);
+        set(root.has-unity && abs(v - 1) < 0.03 ? 1 : v);
     }
 
     // Groove.
@@ -210,7 +212,7 @@ export component HFader inherits Rectangle {
         border-radius: 2px;
     }
     // Unity (100 %) mark.
-    Rectangle {
+    if root.has-unity: Rectangle {
         x: Px.align(inset + track * (1 / root.top), ax);
         width: Px.hair();
         y: Px.align(2px, ay);
@@ -259,7 +261,7 @@ export component HFader inherits Rectangle {
         moved => {
             if self.pressed { root.from-x(self.mouse-x); }
         }
-        double-clicked => { root.set(1); }
+        double-clicked => { if root.has-unity { root.set(1); } }
         scroll-event(e) => {
             root.set(root.value + (e.delta-y > 0 ? 0.02 : -0.02));
             accept
@@ -271,7 +273,7 @@ export component HFader inherits Rectangle {
             if e.text == Key.LeftArrow || e.text == Key.DownArrow { root.set(root.value - 0.02); return accept; }
             if e.text == Key.PageUp { root.set(root.value + 0.1); return accept; }
             if e.text == Key.PageDown { root.set(root.value - 0.1); return accept; }
-            if e.text == Key.Home { root.set(1); return accept; }
+            if e.text == Key.Home && root.has-unity { root.set(1); return accept; }
             reject
         }
     }

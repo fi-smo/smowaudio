@@ -39,6 +39,8 @@ struct Flyout {
     /// Per row: peak hold (0..1) and when it was last raised.
     holds: Vec<(f32, Instant)>,
     meter_timer: slint::Timer,
+    /// Meter timer ticks, for reading the device volume less often.
+    ticks: u32,
 }
 
 /// Where to put the flyout: the point it hangs above (the tray click, or the tray icon), and the
@@ -69,6 +71,7 @@ pub fn create(app: &AppHandle) -> Result<(), slint::PlatformError> {
             devices,
             holds: vec![(0.0, Instant::now()); CHANNEL_COUNT + 1],
             meter_timer: slint::Timer::default(),
+            ticks: 0,
         })
     });
     Ok(())
@@ -108,6 +111,24 @@ fn wire_callbacks(window: &FlyoutWindow, app: &AppHandle) {
     window.on_toggle_mute(move |row| {
         update_row(&handle, row as usize, |s| s.muted = !s.muted);
         refresh(&handle);
+    });
+    let handle = app.clone();
+    window.on_set_device_volume(move |volume| {
+        if let Some((id, _)) = handle.state().device_volume() {
+            if let Err(e) = audio::endpoint::set_volume(&id, volume) {
+                crate::append_log(&format!("device volume: {e:#}"));
+            }
+        }
+        refresh_device(&handle);
+    });
+    let handle = app.clone();
+    window.on_toggle_device_mute(move || {
+        if let Some((id, v)) = handle.state().device_volume() {
+            if let Err(e) = audio::endpoint::set_muted(&id, !v.muted) {
+                crate::append_log(&format!("device mute: {e:#}"));
+            }
+        }
+        refresh_device(&handle);
     });
     let handle = app.clone();
     window.on_choose_output(move |id| {
@@ -352,10 +373,40 @@ fn refresh(app: &AppHandle) {
         w.set_mic_muted(config.mic.muted);
         w.set_mic_listen(config.mic.monitor);
     });
+    refresh_device(app);
 }
 
-/// Meters at 20 fps while open: each row's louder side, with the mixer's peak hold.
+/// The device row: the playing device's own volume, which the speaker's buttons (or Windows) can
+/// change at any time, so the meter timer reads it again every few ticks.
+fn refresh_device(app: &AppHandle) {
+    let state = app.state();
+    let device = state.device_volume();
+    let name = device.as_ref().and(state.playing_output_name.lock().clone()).map(|n| short_name(&n)).unwrap_or_default();
+    FLYOUT.with(|f| {
+        let f = f.borrow();
+        let Some(f) = f.as_ref() else { return };
+        let w = &f.window;
+        w.set_device_shown(device.is_some());
+        if let Some((_, v)) = device {
+            w.set_device_volume(v.volume);
+            w.set_device_muted(v.muted);
+        }
+        w.set_device_name(name.into());
+    });
+}
+
+/// Meters at 20 fps while open: each row's louder side, with the mixer's peak hold. Every sixth
+/// tick it also reads the device's own volume again.
 fn update_meters(app: &AppHandle) {
+    let tick = FLYOUT.with(|f| {
+        f.borrow_mut().as_mut().map_or(0, |f| {
+            f.ticks = f.ticks.wrapping_add(1);
+            f.ticks
+        })
+    });
+    if tick % 6 == 0 {
+        refresh_device(app);
+    }
     let state = app.state();
     let Some(meters) = state.engine.lock().as_ref().map(|e| e.meters()) else { return };
     let (mic_running, mic_muted) = {

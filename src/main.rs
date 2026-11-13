@@ -130,6 +130,13 @@ impl AppState {
         }
     }
 
+    /// The device the output plays to, with its own volume (on a Bluetooth speaker, the speaker's
+    /// own), or None while nothing plays. Needs COM.
+    fn device_volume(&self) -> Option<(String, audio::endpoint::DeviceVolume)> {
+        let id = self.playing_output.lock().clone()?;
+        audio::endpoint::get(&id).ok().map(|v| (id, v))
+    }
+
     fn restart_engine(&self) {
         let config = self.config.lock().clone();
         let mut engine = self.engine.lock();

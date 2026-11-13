@@ -4,6 +4,7 @@
 pub mod defaults;
 pub mod latency;
 pub mod device;
+pub mod endpoint;
 pub mod notify;
 pub mod resample;
 pub mod routing;

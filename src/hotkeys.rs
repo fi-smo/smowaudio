@@ -4,6 +4,7 @@
 //! - `channel.<game|chat|media|aux|master>.<volume_up|volume_down|mute|eq>`
 //! - `mic.<mute|push_to_talk|push_to_mute|gain_up|gain_down|monitor|denoise|low_latency|gate|eq|compressor|limiter>`
 //! - `output.<next|previous>`, `app.<mixer|flyout>`, `windows_defaults`
+//! - `device.<volume_up|volume_down|mute>`: the output device's own volume (a Bluetooth speaker's)
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -19,6 +20,7 @@ use parking_lot::Mutex;
 use crate::app::AppHandle;
 
 use crate::audio::device::{self, Flow};
+use crate::audio::endpoint;
 use crate::config::CHANNEL_NAMES;
 use crate::dsp::chain::ChannelSettings;
 use crate::osd::{self, Osd};
@@ -291,6 +293,7 @@ fn run(app: &AppHandle, action: &str, pressed: bool, fine: bool) -> Option<Osd> 
                 _ => toggle("mic", "Mic", "Compressor", mic.compressor.enabled),
             })
         }
+        ["device", op] => device_volume(&state, op, fine),
         ["output", "next"] => cycle_output(&state, 1),
         ["output", "previous"] => cycle_output(&state, -1),
         ["app", "mixer"] => {
@@ -342,6 +345,44 @@ fn device_label(name: &str) -> String {
 /// Two decimals, so repeated steps land on 55 % rather than 54.999 %.
 fn round_volume(v: f32) -> f32 {
     (v * 100.0).round() / 100.0
+}
+
+/// Changes the playing device's own volume: on a Bluetooth speaker with hardware volume, the
+/// speaker turns itself up or down, as with its own buttons.
+fn device_volume(state: &AppState, op: &str, fine: bool) -> Option<Osd> {
+    let (id, before) = state.device_volume()?;
+    let mut step = if fine { FINE_VOLUME_STEP } else { state.config.lock().volume_step };
+    let mut after = before.clone();
+    // A device can have fewer volume steps than percentages and round a small step away; take
+    // a bigger one then, so holding the key never gets stuck.
+    for _ in 0..3 {
+        let result = match op {
+            "volume_up" => endpoint::set_volume(&id, round_volume(before.volume + step).min(1.0)),
+            "volume_down" => endpoint::set_volume(&id, round_volume(before.volume - step).max(0.0)),
+            "mute" => endpoint::set_muted(&id, !before.muted),
+            _ => return None,
+        };
+        if let Err(e) = result {
+            append_log(&format!("shortcut could not change the device volume: {e:#}"));
+            return None;
+        }
+        after = endpoint::get(&id).unwrap_or_else(|_| before.clone());
+        let at_limit = (op == "volume_up" && before.volume >= 1.0) || (op == "volume_down" && before.volume <= 0.0);
+        if op == "mute" || at_limit || (after.volume - before.volume).abs() > 0.001 {
+            break;
+        }
+        step *= 2.0;
+    }
+    let name = state.playing_output_name.lock().clone().map(|n| device_label(&n)).unwrap_or_default();
+    Some(Osd {
+        group: "output",
+        tape: "Device".into(),
+        label: name,
+        value: if after.muted { "Muted".into() } else { format!("{:.0} %", after.volume * 100.0) },
+        level: Some(after.volume),
+        unity: None,
+        dim: after.muted,
+    })
 }
 
 /// Moves the output to the next or previous connected headphones/speakers.
