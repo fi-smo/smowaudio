@@ -323,38 +323,42 @@ export component MicIcon inherits Glyph {
 }
 
 /// An on/off switch (36×20 track, 12px knob), optionally with a label after it.
-export component Switch inherits HorizontalLayout {
+export component Switch inherits Rectangle {
     in-out property <bool> checked;
     in property <string> text;
     in property <string> label; // for screen readers when there's no text
     in property <color> tint: Theme.mic;
     callback toggled(bool);
-    spacing: 8px;
-    alignment: start;
-    track := Rectangle {
-        width: 36px;
-        height: 20px;
-        y: (parent.height - 20px) / 2;
-        border-radius: 10px;
-        background: root.checked ? root.tint : Theme.well;
-        border-width: Px.hair();
-        border-color: root.checked ? root.tint : Theme.line-strong;
-        Rectangle {
-            x: root.checked ? 19px : 3px;
-            y: (parent.height - 12px) / 2;
-            width: 12px;
-            height: 12px;
-            border-radius: 6px;
-            background: root.checked ? Theme.panel : Theme.muted;
-            animate x { duration: 150ms; }
+    // The TouchArea covers the whole switch. As a cell of the row it got no width wherever the
+    // switch is sized to fit (Settings > General), and clicks did nothing.
+    row := HorizontalLayout {
+        spacing: 8px;
+        alignment: start;
+        track := Rectangle {
+            width: 36px;
+            height: 20px;
+            y: (parent.height - 20px) / 2;
+            border-radius: 10px;
+            background: root.checked ? root.tint : Theme.well;
+            border-width: Px.hair();
+            border-color: root.checked ? root.tint : Theme.line-strong;
+            Rectangle {
+                x: root.checked ? 19px : 3px;
+                y: (parent.height - 12px) / 2;
+                width: 12px;
+                height: 12px;
+                border-radius: 6px;
+                background: root.checked ? Theme.panel : Theme.muted;
+                animate x { duration: 150ms; }
+            }
+            animate background { duration: 150ms; }
         }
-        animate background { duration: 150ms; }
-    }
-    if root.text != "": Text {
-        text: root.text;
-        color: Theme.muted;
-        font-size: 12px;
-        vertical-alignment: center;
+        if root.text != "": Text {
+            text: root.text;
+            color: Theme.muted;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
     }
     TouchArea {
         mouse-cursor: pointer;

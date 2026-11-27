@@ -5216,7 +5216,7 @@ dependencies = [
 
 [[package]]
 name = "smowaudio"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

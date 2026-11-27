@@ -694,7 +694,7 @@ fn shortcut_groups() -> Vec<(&'static str, &'static str, i32, Vec<(String, &'sta
         ("master", "Master", 4, channel("master")),
         (
             "device",
-            "Device (the speaker's own volume)",
+            "Device",
             -1,
             vec![
                 ("device.volume_up".to_string(), "Volume up"),
@@ -1006,7 +1006,9 @@ fn shortcuts(window: &MainWindow, config: &Config, errors: &BTreeMap<String, Str
         }
     });
     window.set_shortcut_group(current_group.as_str().into());
-    window.set_shortcut_group_title((*group_title).into());
+    // The sidebar only has room for "Device"; the header says what it is.
+    let header = if current_group == "device" { "Device: the speaker's own volume" } else { *group_title };
+    window.set_shortcut_group_title(header.into());
     window.set_volume_step(config.volume_step);
     window.set_any_shortcuts(!config.hotkeys.is_empty());
 }

@@ -3,6 +3,11 @@
 Every release needs a section here: the release build takes its notes from it, and the app shows
 them under Settings → Updates.
 
+## 0.10.4 — 2026-11-27
+- The switches under Settings → General (Launch at Windows sign-in, Set Windows default devices) and Settings → Updates react to clicks again
+- The title bar and taskbar show Smowaudio's icon instead of Windows' generic one
+- Settings → Shortcuts: the Device group's name fits in the list
+
 ## 0.10.3 — 2026-11-13
 - Turn your speaker or headphones themselves up and down from Smowaudio: a new Device slider in the tray flyout and under the mixer's strips sets the output device's own volume, which on a Bluetooth speaker is the volume its own buttons change
 - New shortcuts for it (Settings → Shortcuts → Device): volume up, volume down and mute, with the on-screen overlay

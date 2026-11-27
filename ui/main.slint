@@ -218,6 +218,8 @@ export component MainWindow inherits Window {
     in property <bool> repaint;
 
     title: "Smowaudio";
+    // Without it the title bar and taskbar show Windows' generic app icon.
+    icon: @image-url("../icons/64x64.png");
     min-width: 440px;
     min-height: 520px;
     preferred-width: 1180px;
